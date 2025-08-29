@@ -4,6 +4,8 @@ import random
 from typing import Tuple, List
 
 import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
 
 
 def load_obstacle_map(map_path: str) -> np.ndarray:
@@ -80,6 +82,34 @@ def pick_start_goal(
     raise RuntimeError("Failed to find valid start and goal after" f" {attempts} attempts")
 
 
+def visualize_path(grid: np.ndarray, path: List[Tuple[int, int]]) -> None:
+    """Animate the robot moving along ``path`` on ``grid`` using Matplotlib."""
+    fig, ax = plt.subplots()
+    ax.imshow(grid, cmap="gray_r", origin="lower")
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+    path_x = [p[0] for p in path]
+    path_y = [p[1] for p in path]
+    ax.plot(path_x, path_y, "b--", linewidth=1, alpha=0.5)
+
+    robot, = ax.plot([], [], "ro", markersize=5)
+
+    def init():
+        robot.set_data([], [])
+        return (robot,)
+
+    def update(frame: int):
+        robot.set_data(path_x[frame], path_y[frame])
+        return (robot,)
+
+    FuncAnimation(
+        fig, update, frames=len(path), init_func=init, interval=300, blit=True, repeat=False
+    )
+    plt.show()
+
+
 if __name__ == "__main__":
     start, goal, path = pick_start_goal(obstacle_map)
     print(f"Found path of length {len(path) - 1} between {start} and {goal}")
+    visualize_path(obstacle_map, path)
