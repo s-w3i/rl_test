@@ -18,3 +18,6 @@ example:
 ```
 
 If the specified file cannot be read, the scripts raise a clear error message.
+
+`single_path.py` will randomly choose two free cells from the map and run A*
+between them, retrying if the selected cells are not connected.

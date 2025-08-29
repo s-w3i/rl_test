@@ -1,5 +1,6 @@
 import os
 import heapq
+import random
 from typing import Tuple, List
 
 import numpy as np
@@ -64,11 +65,21 @@ MAP_FILE = os.environ.get("MAP_FILE", "map.txt")
 obstacle_map = load_obstacle_map(MAP_FILE)
 
 
+def pick_start_goal(
+    grid: np.ndarray, attempts: int = 100
+) -> Tuple[Tuple[int, int], Tuple[int, int], List[Tuple[int, int]]]:
+    """Pick two free cells with a valid connecting path."""
+    free = [(int(x), int(y)) for y, x in np.argwhere(grid == 0)]
+    if len(free) < 2:
+        raise ValueError("Map must contain at least two free cells")
+    for _ in range(attempts):
+        start, goal = random.sample(free, 2)
+        path = astar(start, goal, grid)
+        if path:
+            return start, goal, path
+    raise RuntimeError("Failed to find valid start and goal after" f" {attempts} attempts")
+
+
 if __name__ == "__main__":
-    start = (1, 1)
-    goal = (obstacle_map.shape[1] - 2, obstacle_map.shape[0] - 2)
-    path = astar(start, goal, obstacle_map)
-    if path:
-        print("Found path of length", len(path) - 1)
-    else:
-        print("No path found between", start, "and", goal)
+    start, goal, path = pick_start_goal(obstacle_map)
+    print(f"Found path of length {len(path) - 1} between {start} and {goal}")
