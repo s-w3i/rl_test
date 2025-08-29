@@ -67,49 +67,87 @@ MAP_FILE = os.environ.get("MAP_FILE", "map.txt")
 obstacle_map = load_obstacle_map(MAP_FILE)
 
 
-def pick_start_goal(
-    grid: np.ndarray, attempts: int = 100
-) -> Tuple[Tuple[int, int], Tuple[int, int], List[Tuple[int, int]]]:
-    """Pick two free cells with a valid connecting path."""
+def pick_agent_paths(
+    grid: np.ndarray, num_agents: int, attempts: int = 1000
+) -> List[Tuple[Tuple[int, int], Tuple[int, int], List[Tuple[int, int]]]]:
+    """Pick ``num_agents`` start/goal pairs with valid connecting paths.
+
+    Cells are chosen from the free space of ``grid``.  Start and goal locations
+    for different agents are guaranteed to be distinct.
+    """
     free = [(int(x), int(y)) for y, x in np.argwhere(grid == 0)]
-    if len(free) < 2:
-        raise ValueError("Map must contain at least two free cells")
+    if len(free) < num_agents * 2:
+        raise ValueError("Map must contain at least two free cells per agent")
+
+    paths: List[Tuple[Tuple[int, int], Tuple[int, int], List[Tuple[int, int]]]] = []
+    used = set()
     for _ in range(attempts):
+        if len(paths) == num_agents:
+            return paths
         start, goal = random.sample(free, 2)
+        if start in used or goal in used or start == goal:
+            continue
         path = astar(start, goal, grid)
         if path:
-            return start, goal, path
-    raise RuntimeError("Failed to find valid start and goal after" f" {attempts} attempts")
+            paths.append((start, goal, path))
+            used.update({start, goal})
+
+    raise RuntimeError(
+        f"Failed to find paths for {num_agents} agents after {attempts} attempts"
+    )
 
 
-def visualize_path(grid: np.ndarray, path: List[Tuple[int, int]]) -> None:
-    """Animate the robot moving along ``path`` on ``grid`` using Matplotlib."""
+def visualize_paths(
+    grid: np.ndarray,
+    agents: List[Tuple[Tuple[int, int], Tuple[int, int], List[Tuple[int, int]]]],
+) -> None:
+    """Animate multiple agents moving along their paths on ``grid``."""
     fig, ax = plt.subplots()
     ax.imshow(grid, cmap="gray_r", origin="lower")
     ax.set_xticks([])
     ax.set_yticks([])
 
-    path_x = [p[0] for p in path]
-    path_y = [p[1] for p in path]
-    ax.plot(path_x, path_y, "b--", linewidth=1, alpha=0.5)
-
-    robot, = ax.plot([], [], "ro", markersize=5)
+    colors = ["red", "blue", "green", "orange", "purple", "cyan"]
+    markers = []
+    max_len = 0
+    for idx, (start, goal, path) in enumerate(agents):
+        color = colors[idx % len(colors)]
+        path_x = [p[0] for p in path]
+        path_y = [p[1] for p in path]
+        ax.plot(path_x, path_y, linestyle="--", color=color, linewidth=1, alpha=0.7)
+        ax.plot(start[0], start[1], marker="o", color=color, markersize=4)
+        ax.plot(goal[0], goal[1], marker="x", color=color, markersize=4)
+        marker, = ax.plot([], [], marker="o", color=color, markersize=5)
+        markers.append((marker, path))
+        max_len = max(max_len, len(path))
 
     def init():
-        robot.set_data([], [])
-        return (robot,)
+        for marker, _ in markers:
+            marker.set_data([], [])
+        return tuple(m for m, _ in markers)
 
     def update(frame: int):
-        robot.set_data(path_x[frame], path_y[frame])
-        return (robot,)
+        for marker, path in markers:
+            step = min(frame, len(path) - 1)
+            marker.set_data(path[step][0], path[step][1])
+        return tuple(m for m, _ in markers)
 
     FuncAnimation(
-        fig, update, frames=len(path), init_func=init, interval=300, blit=True, repeat=False
+        fig,
+        update,
+        frames=max_len,
+        init_func=init,
+        interval=300,
+        blit=True,
+        repeat=False,
     )
     plt.show()
 
 
 if __name__ == "__main__":
-    start, goal, path = pick_start_goal(obstacle_map)
-    print(f"Found path of length {len(path) - 1} between {start} and {goal}")
-    visualize_path(obstacle_map, path)
+    agents = pick_agent_paths(obstacle_map, num_agents=6)
+    for i, (start, goal, path) in enumerate(agents, 1):
+        print(
+            f"Agent {i}: path length {len(path) - 1} between {start} and {goal}"
+        )
+    visualize_paths(obstacle_map, agents)
