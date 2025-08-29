@@ -6,6 +6,7 @@ from typing import Tuple, List
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
+from matplotlib.lines import Line2D
 
 
 def load_obstacle_map(map_path: str) -> np.ndarray:
@@ -108,13 +109,15 @@ def visualize_paths(
     ax.set_yticks([])
 
     colors = ["red", "blue", "green", "orange", "purple", "cyan"]
-    markers = []
+    actors = []
     max_len = 0
     for idx, (start, goal, path) in enumerate(agents):
         color = colors[idx % len(colors)]
         path_x = [p[0] for p in path]
         path_y = [p[1] for p in path]
-        ax.plot(path_x, path_y, linestyle="--", color=color, linewidth=1, alpha=0.7)
+        line, = ax.plot(
+            [], [], linestyle="--", color=color, linewidth=1, alpha=0.7, label=f"Agent {idx + 1}"
+        )
         ax.plot(start[0], start[1], marker="o", color=color, markersize=4)
         ax.plot(goal[0], goal[1], marker="x", color=color, markersize=4)
         marker, = ax.plot([], [], marker="o", color=color, markersize=12)
@@ -128,22 +131,38 @@ def visualize_paths(
             fontsize=8,
             fontweight="bold",
         )
-        markers.append((marker, label, path))
+        actors.append((marker, label, line, path_x, path_y))
         max_len = max(max_len, len(path))
 
+    legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            label=f"Agent {idx + 1}",
+            markerfacecolor=colors[idx % len(colors)],
+            markersize=8,
+        )
+        for idx in range(len(agents))
+    ]
+    ax.legend(handles=legend_handles, loc="upper right")
+
     def init():
-        for marker, label, _ in markers:
+        for marker, label, line, _, _ in actors:
             marker.set_data([], [])
+            line.set_data([], [])
             label.set_position((-1, -1))
-        return tuple(item for m in markers for item in m[:2])
+        return tuple(item for a in actors for item in a[:3])
 
     def update(frame: int):
-        for marker, label, path in markers:
-            step = min(frame, len(path) - 1)
-            x, y = path[step]
+        for marker, label, line, path_x, path_y in actors:
+            step = min(frame, len(path_x) - 1)
+            x, y = path_x[step], path_y[step]
             marker.set_data(x, y)
             label.set_position((x, y))
-        return tuple(item for m in markers for item in m[:2])
+            line.set_data(path_x[: step + 1], path_y[: step + 1])
+        return tuple(item for a in actors for item in a[:3])
 
     FuncAnimation(
         fig,
