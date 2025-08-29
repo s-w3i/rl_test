@@ -1,6 +1,8 @@
 
 import argparse
 import heapq
+import os
+import random
 import matplotlib.pyplot as plt
 from matplotlib import animation
 
@@ -37,13 +39,34 @@ def astar(grid, start, goal):
     return None
 
 
-def build_grid(width, height):
-    grid = [[0 for _ in range(width)] for _ in range(height)]
-    # Vertical wall with a gap at y=5
-    for y in range(height):
-        if y != 5:
-            grid[y][4] = 1
-    return grid
+def load_grid(path):
+    """Read a grid map from a text file.
+
+    The file should contain rows of integers separated by spaces. ``0``
+    represents a free cell and ``1`` an obstacle.
+    """
+    with open(path) as f:
+        return [list(map(int, line.split())) for line in f if line.strip()]
+
+
+def random_agents(grid, count):
+    """Generate ``count`` agents with random start/goal positions.
+
+    All positions are sampled uniformly from free cells (value ``0``) and are
+    unique across all starts and goals.
+    """
+    width, height = len(grid[0]), len(grid)
+    free = [(x, y) for y in range(height) for x in range(width) if grid[y][x] == 0]
+    needed = count * 2
+    if len(free) < needed:
+        raise ValueError("Not enough free cells for the requested number of agents")
+    random.shuffle(free)
+    agents = []
+    for _ in range(count):
+        start = free.pop()
+        goal = free.pop()
+        agents.append({'start': start, 'goal': goal})
+    return agents
 
 
 def plan_paths(grid, agents):
@@ -55,9 +78,20 @@ def plan_paths(grid, agents):
     return agents
 
 
+def validate_positions(grid, agents):
+    width, height = len(grid[0]), len(grid)
+    for agent in agents:
+        for key in ['start', 'goal']:
+            x, y = agent[key]
+            if not (0 <= x < width and 0 <= y < height):
+                raise ValueError(f"{key} {agent[key]} out of bounds") 
+            if grid[y][x] != 0:
+                raise ValueError(f"{key} {agent[key]} is on an obstacle")
+
+
 def animate(grid, agents, save_path=None):
     width, height = len(grid[0]), len(grid)
-    colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown']
+    colors = plt.cm.get_cmap('tab10', len(agents))
 
     fig, ax = plt.subplots()
     ax.set_xlim(-0.5, width - 0.5)
@@ -80,8 +114,8 @@ def animate(grid, agents, save_path=None):
         path = agent['path']
         xs = [p[0] for p in path]
         ys = [p[1] for p in path]
-        ax.plot(xs, ys, linestyle='--', color=colors[idx], alpha=0.5)
-        patch, = ax.plot([], [], marker='o', color=colors[idx], markersize=8)
+        ax.plot(xs, ys, linestyle='--', color=colors(idx), alpha=0.5)
+        patch, = ax.plot([], [], marker='o', color=colors(idx), markersize=8)
         patches.append(patch)
         if len(path) > max_len:
             max_len = len(path)
@@ -115,20 +149,20 @@ def animate(grid, agents, save_path=None):
 def main():
     parser = argparse.ArgumentParser(description='Multi-agent grid simulation')
     parser.add_argument('--save', type=str, help='Path to save animation (GIF)')
+    parser.add_argument('--agents', type=int, default=6,
+                        help='Number of agents to simulate')
+    parser.add_argument('--seed', type=int, help='Optional random seed')
     args = parser.parse_args()
 
-    width = height = 10
-    grid = build_grid(width, height)
+    if args.seed is not None:
+        random.seed(args.seed)
 
-    agents = [
-        {'start': (0, 0), 'goal': (9, 9)},
-        {'start': (0, 9), 'goal': (9, 0)},
-        {'start': (9, 0), 'goal': (0, 9)},
-        {'start': (9, 9), 'goal': (0, 0)},
-        {'start': (0, 5), 'goal': (9, 5)},
-        {'start': (5, 0), 'goal': (5, 9)},
-    ]
+    map_file = os.environ.get('MAP_FILE', 'map.txt')
+    grid = load_grid(map_file)
 
+    agents = random_agents(grid, args.agents)
+
+    validate_positions(grid, agents)
     plan_paths(grid, agents)
     animate(grid, agents, save_path=args.save)
 
