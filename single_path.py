@@ -1,185 +1,137 @@
-import os
+
+import argparse
 import heapq
-import random
-from typing import Tuple, List
-
-import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
-from matplotlib.lines import Line2D
+from matplotlib import animation
 
 
-def load_obstacle_map(map_path: str) -> np.ndarray:
-    """Load an obstacle map from ``map_path``.
-
-    The file should contain whitespace separated ``0``s and ``1``s, one row per
-    line.
-    """
-    path = map_path
-    if not os.path.isabs(path):
-        path = os.path.join(os.path.dirname(__file__), path)
-    try:
-        return np.loadtxt(path, dtype=np.float32)
-    except Exception as exc:  # pragma: no cover - logging
-        raise RuntimeError(f"Failed to load map from {path}: {exc}")
-
-
-def heuristic(a: Tuple[int, int], b: Tuple[int, int]) -> float:
-    """Manhattan distance heuristic for A*"""
+def manhattan(a, b):
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
 
-def astar(start: Tuple[int, int], goal: Tuple[int, int], grid: np.ndarray) -> List[Tuple[int, int]]:
-    """Simple A* path search on a grid map."""
-    rows, cols = grid.shape
-    open_list: List[Tuple[float, float, Tuple[int, int]]] = []
-    heapq.heappush(open_list, (heuristic(start, goal), 0, start))
-    came_from = {start: None}
-    g_scores = {start: 0}
+def astar(grid, start, goal):
+    width, height = len(grid[0]), len(grid)
+    open_set = []
+    heapq.heappush(open_set, (manhattan(start, goal), 0, start, [start]))
+    visited = set()
 
-    while open_list:
-        _, g, current = heapq.heappop(open_list)
+    while open_set:
+        f, g, current, path = heapq.heappop(open_set)
         if current == goal:
-            path = [current]
-            while came_from[current] is not None:
-                current = came_from[current]
-                path.append(current)
-            path.reverse()
             return path
+        if current in visited:
+            continue
+        visited.add(current)
 
         x, y = current
-        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
             nx, ny = x + dx, y + dy
-            if not (0 <= nx < cols and 0 <= ny < rows):
-                continue
-            if grid[ny, nx] == 1:
-                continue
-            tentative_g = g + 1
-            neighbor = (nx, ny)
-            if tentative_g < g_scores.get(neighbor, float('inf')):
-                g_scores[neighbor] = tentative_g
-                f = tentative_g + heuristic(neighbor, goal)
-                came_from[neighbor] = current
-                heapq.heappush(open_list, (f, tentative_g, neighbor))
-    return []
+            if 0 <= nx < width and 0 <= ny < height and grid[ny][nx] == 0:
+                next_pos = (nx, ny)
+                if next_pos in visited:
+                    continue
+                new_path = path + [next_pos]
+                new_g = g + 1
+                new_f = new_g + manhattan(next_pos, goal)
+                heapq.heappush(open_set, (new_f, new_g, next_pos, new_path))
+    return None
 
 
-MAP_FILE = os.environ.get("MAP_FILE", "map.txt")
-obstacle_map = load_obstacle_map(MAP_FILE)
+def build_grid(width, height):
+    grid = [[0 for _ in range(width)] for _ in range(height)]
+    # Vertical wall with a gap at y=5
+    for y in range(height):
+        if y != 5:
+            grid[y][4] = 1
+    return grid
 
 
-def pick_agent_paths(
-    grid: np.ndarray, num_agents: int, attempts: int = 1000
-) -> List[Tuple[Tuple[int, int], Tuple[int, int], List[Tuple[int, int]]]]:
-    """Pick ``num_agents`` start/goal pairs with valid connecting paths.
-
-    Cells are chosen from the free space of ``grid``.  Start and goal locations
-    for different agents are guaranteed to be distinct.
-    """
-    free = [(int(x), int(y)) for y, x in np.argwhere(grid == 0)]
-    if len(free) < num_agents * 2:
-        raise ValueError("Map must contain at least two free cells per agent")
-
-    paths: List[Tuple[Tuple[int, int], Tuple[int, int], List[Tuple[int, int]]]] = []
-    used = set()
-    for _ in range(attempts):
-        if len(paths) == num_agents:
-            return paths
-        start, goal = random.sample(free, 2)
-        if start in used or goal in used or start == goal:
-            continue
-        path = astar(start, goal, grid)
-        if path:
-            paths.append((start, goal, path))
-            used.update({start, goal})
-
-    raise RuntimeError(
-        f"Failed to find paths for {num_agents} agents after {attempts} attempts"
-    )
+def plan_paths(grid, agents):
+    for agent in agents:
+        path = astar(grid, agent['start'], agent['goal'])
+        if path is None:
+            raise RuntimeError(f"No path for agent from {agent['start']} to {agent['goal']}")
+        agent['path'] = path
+    return agents
 
 
-def visualize_paths(
-    grid: np.ndarray,
-    agents: List[Tuple[Tuple[int, int], Tuple[int, int], List[Tuple[int, int]]]],
-) -> None:
-    """Animate multiple agents moving along their paths on ``grid``."""
+def animate(grid, agents, save_path=None):
+    width, height = len(grid[0]), len(grid)
+    colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown']
+
     fig, ax = plt.subplots()
-    ax.imshow(grid, cmap="gray_r", origin="lower")
-    ax.set_xticks([])
-    ax.set_yticks([])
+    ax.set_xlim(-0.5, width - 0.5)
+    ax.set_ylim(-0.5, height - 0.5)
+    ax.set_xticks(range(width))
+    ax.set_yticks(range(height))
+    ax.grid(True)
+    ax.set_aspect('equal')
 
-    colors = ["red", "blue", "green", "orange", "purple", "cyan"]
-    actors = []
+    # draw obstacles
+    for y in range(height):
+        for x in range(width):
+            if grid[y][x] == 1:
+                ax.add_patch(plt.Rectangle((x - 0.5, y - 0.5), 1, 1, color='black'))
+
+    # draw paths and setup agents
+    patches = []
     max_len = 0
-    for idx, (start, goal, path) in enumerate(agents):
-        color = colors[idx % len(colors)]
-        path_x = [p[0] for p in path]
-        path_y = [p[1] for p in path]
-        line, = ax.plot(
-            [], [], linestyle="--", color=color, linewidth=1, alpha=0.7, label=f"Agent {idx + 1}"
-        )
-        ax.plot(start[0], start[1], marker="o", color=color, markersize=4)
-        ax.plot(goal[0], goal[1], marker="x", color=color, markersize=4)
-        marker, = ax.plot([], [], marker="o", color=color, markersize=12)
-        label = ax.text(
-            0,
-            0,
-            str(idx + 1),
-            color="black",
-            ha="center",
-            va="center",
-            fontsize=8,
-            fontweight="bold",
-        )
-        actors.append((marker, label, line, path_x, path_y))
-        max_len = max(max_len, len(path))
-
-    legend_handles = [
-        Line2D(
-            [0],
-            [0],
-            marker="o",
-            color="w",
-            label=f"Agent {idx + 1}",
-            markerfacecolor=colors[idx % len(colors)],
-            markersize=8,
-        )
-        for idx in range(len(agents))
-    ]
-    ax.legend(handles=legend_handles, loc="upper right")
+    for idx, agent in enumerate(agents):
+        path = agent['path']
+        xs = [p[0] for p in path]
+        ys = [p[1] for p in path]
+        ax.plot(xs, ys, linestyle='--', color=colors[idx], alpha=0.5)
+        patch, = ax.plot([], [], marker='o', color=colors[idx], markersize=8)
+        patches.append(patch)
+        if len(path) > max_len:
+            max_len = len(path)
 
     def init():
-        for marker, label, line, _, _ in actors:
-            marker.set_data([], [])
-            line.set_data([], [])
-            label.set_position((-1, -1))
-        return tuple(item for a in actors for item in a[:3])
+        for patch in patches:
+            patch.set_data([], [])
+        return patches
 
-    def update(frame: int):
-        for marker, label, line, path_x, path_y in actors:
-            step = min(frame, len(path_x) - 1)
-            x, y = path_x[step], path_y[step]
-            marker.set_data(x, y)
-            label.set_position((x, y))
-            line.set_data(path_x[: step + 1], path_y[: step + 1])
-        return tuple(item for a in actors for item in a[:3])
+    def update(frame):
+        for i, agent in enumerate(agents):
+            path = agent['path']
+            if frame < len(path):
+                x, y = path[frame]
+            else:
+                x, y = path[-1]
+            patches[i].set_data([x], [y])
+        return patches
 
-    FuncAnimation(
-        fig,
-        update,
-        frames=max_len,
-        init_func=init,
-        interval=300,
-        blit=True,
-        repeat=False,
-    )
-    plt.show()
+    anim = animation.FuncAnimation(
+        fig, update, init_func=init, frames=max_len, interval=500, blit=True)
+
+    if save_path:
+        anim.save(save_path, writer='pillow')
+    else:
+        plt.show()
+
+    plt.close(fig)
 
 
-if __name__ == "__main__":
-    agents = pick_agent_paths(obstacle_map, num_agents=6)
-    for i, (start, goal, path) in enumerate(agents, 1):
-        print(
-            f"Agent {i}: path length {len(path) - 1} between {start} and {goal}"
-        )
-    visualize_paths(obstacle_map, agents)
+def main():
+    parser = argparse.ArgumentParser(description='Multi-agent grid simulation')
+    parser.add_argument('--save', type=str, help='Path to save animation (GIF)')
+    args = parser.parse_args()
+
+    width = height = 10
+    grid = build_grid(width, height)
+
+    agents = [
+        {'start': (0, 0), 'goal': (9, 9)},
+        {'start': (0, 9), 'goal': (9, 0)},
+        {'start': (9, 0), 'goal': (0, 9)},
+        {'start': (9, 9), 'goal': (0, 0)},
+        {'start': (0, 5), 'goal': (9, 5)},
+        {'start': (5, 0), 'goal': (5, 9)},
+    ]
+
+    plan_paths(grid, agents)
+    animate(grid, agents, save_path=args.save)
+
+
+if __name__ == '__main__':
+    main()
