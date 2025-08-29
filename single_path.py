@@ -117,20 +117,33 @@ def visualize_paths(
         ax.plot(path_x, path_y, linestyle="--", color=color, linewidth=1, alpha=0.7)
         ax.plot(start[0], start[1], marker="o", color=color, markersize=4)
         ax.plot(goal[0], goal[1], marker="x", color=color, markersize=4)
-        marker, = ax.plot([], [], marker="o", color=color, markersize=5)
-        markers.append((marker, path))
+        marker, = ax.plot([], [], marker="o", color=color, markersize=12)
+        label = ax.text(
+            0,
+            0,
+            str(idx + 1),
+            color="black",
+            ha="center",
+            va="center",
+            fontsize=8,
+            fontweight="bold",
+        )
+        markers.append((marker, label, path))
         max_len = max(max_len, len(path))
 
     def init():
-        for marker, _ in markers:
+        for marker, label, _ in markers:
             marker.set_data([], [])
-        return tuple(m for m, _ in markers)
+            label.set_position((-1, -1))
+        return tuple(item for m in markers for item in m[:2])
 
     def update(frame: int):
-        for marker, path in markers:
+        for marker, label, path in markers:
             step = min(frame, len(path) - 1)
-            marker.set_data(path[step][0], path[step][1])
-        return tuple(m for m, _ in markers)
+            x, y = path[step]
+            marker.set_data(x, y)
+            label.set_position((x, y))
+        return tuple(item for m in markers for item in m[:2])
 
     FuncAnimation(
         fig,
