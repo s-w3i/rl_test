@@ -91,9 +91,10 @@ def validate_positions(grid, agents):
 
 def animate(grid, agents, save_path=None):
     width, height = len(grid[0]), len(grid)
-    colors = plt.cm.get_cmap('tab10', len(agents))
+    colors = plt.get_cmap('tab10', len(agents))
 
     fig, ax = plt.subplots()
+    fig.subplots_adjust(right=0.8)
     ax.set_xlim(-0.5, width - 0.5)
     ax.set_ylim(-0.5, height - 0.5)
     ax.set_xticks(range(width))
@@ -114,7 +115,13 @@ def animate(grid, agents, save_path=None):
         path = agent['path']
         xs = [p[0] for p in path]
         ys = [p[1] for p in path]
-        ax.plot(xs, ys, linestyle='--', color=colors(idx), alpha=0.5)
+        ax.plot(xs, ys, linestyle='--', color=colors(idx), alpha=0.5,
+                label=f"Agent {idx + 1}")
+        # mark start and goal positions
+        sx, sy = path[0]
+        gx, gy = path[-1]
+        ax.plot(sx, sy, marker='^', color=colors(idx), markersize=8)
+        ax.plot(gx, gy, marker='s', color=colors(idx), markersize=8)
         patch, = ax.plot([], [], marker='o', color=colors(idx), markersize=8)
         patches.append(patch)
         if len(path) > max_len:
@@ -137,6 +144,7 @@ def animate(grid, agents, save_path=None):
 
     anim = animation.FuncAnimation(
         fig, update, init_func=init, frames=max_len, interval=500, blit=True)
+    ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
 
     if save_path:
         anim.save(save_path, writer='pillow')
