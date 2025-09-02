@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Suggested filename:
+# rack_pickplace_dueling_double_per_fixed_pairs_shield.py
+
 import os
 import time
 import heapq
@@ -37,8 +40,8 @@ AGENT_COLORS = ['blue', 'green', 'purple', 'gray', 'orange', 'brown', 'cyan', 'm
 num_agents = 8
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-# NEW: clearer folder name for this method (rack pick/place + Dueling Double DQN + PER + fixed pairs)
-output_folder = "results/rack_pickplace_dueling_double_per_fixed_pairs"
+# NEW: results folder name with "shield" suffix
+output_folder = "results/rack_pickplace_dueling_double_per_fixed_pairs_shield"
 os.makedirs(output_folder, exist_ok=True)
 
 # =========================
@@ -73,6 +76,7 @@ obstacle_map = np.array([
 
 ACTIONS = [(0,-1),(0,1),(-1,0),(1,0),(0,0)]  # U, D, L, R, STOP
 ACTION_SIZE = 5
+STOP_IDX = ACTIONS.index((0,0))
 FOUR = ((0,-1),(0,1),(-1,0),(1,0))
 
 # =========================
@@ -107,10 +111,6 @@ def astar(grid, start, goal):
 # Start/Goal generation from OBSTACLES (racks)
 # =========================
 def generate_map_with_positions(min_distance=8, max_attempts=10000):
-    """
-    Pick starts & goals from 'dockable' obstacle cells (value==1) that have at least one free neighbor.
-    Agents may leave their start rack and enter ONLY their own goal rack.
-    """
     H,W = obstacle_map.shape
 
     dockables = []
@@ -154,19 +154,18 @@ def generate_map_with_positions(min_distance=8, max_attempts=10000):
     if len(starts) < num_agents:
         raise RuntimeError(f"Could not pair {num_agents} agents after {attempts} attempts.")
 
-    # Colored map for viz: free=white, obstacle=black, starts=blue, goals=red
     H,W = obstacle_map.shape
     colored = np.zeros((H,W,3),dtype=np.float32)
     colored[obstacle_map==0]=[1,1,1]
     colored[obstacle_map==1]=[0,0,0]
     for i in range(num_agents):
         sx,sy=starts[i]; gx,gy=goals[i]
-        colored[sy,sx]=[0,0,1]  # start on rack
-        colored[gy,gx]=[1,0,0]  # goal on rack
+        colored[sy,sx]=[0,0,1]
+        colored[gy,gx]=[1,0,0]
     return colored, starts, goals
 
 # =========================
-# Observation  (GOAL CHANNEL ADDED)
+# Observation (GOAL CHANNEL)
 # =========================
 INPUT_CHANNELS = 4  # obstacles, me, others, my-goal
 
@@ -257,10 +256,6 @@ beta_start, beta_end = 0.4, 1.0
 # Action Masking (allow entering OWN goal rack)
 # =========================
 def mask_invalid_actions(q:torch.Tensor, pos:Tuple[int,int], goal:Tuple[int,int]):
-    """
-    Mask moves that land on obstacles, EXCEPT entering the agent's goal rack cell.
-    STOP is always allowed.
-    """
     x,y = pos
     q = q.clone()
     for a,(dx,dy) in enumerate(ACTIONS):
@@ -275,11 +270,10 @@ def mask_invalid_actions(q:torch.Tensor, pos:Tuple[int,int], goal:Tuple[int,int]
     return q
 
 # =========================
-# Reward Shaping via BFS Distance (cache per episode)
+# Reward Shaping via BFS Distance
 # =========================
 _dist_cache = {}
 def distance_map_to(goal:Tuple[int,int]):
-    """Grid shortest-path distance from every free cell to goal; goal rack is opened."""
     if goal in _dist_cache:
         return _dist_cache[goal]
     gx, gy = goal
@@ -303,12 +297,6 @@ def distance_map_to(goal:Tuple[int,int]):
 # Env Step (with rack semantics + BFS shaping)
 # =========================
 def step_single(agent_pos, action, goal):
-    """
-    - Leaving start rack: allowed because you move into a free neighbor.
-    - Entering goal rack: allowed only if target == goal.
-    - Moving into any other obstacle: invalid.
-    - Reward: dense shaping from BFS distances + small step cost.
-    """
     dx,dy = ACTIONS[action]
     if dx==0 and dy==0:
         return agent_pos, -0.2, False  # tiny idling cost
@@ -329,13 +317,12 @@ def step_single(agent_pos, action, goal):
         return new_pos, +50.0, False
 
     shaped = 0.0
-    # If the agent starts on a rack (prevd=inf), only reward moving to finite distance cells mildly
     if np.isfinite(prevd) and np.isfinite(newd):
         shaped = float(np.clip(prevd - newd, -1.0, 1.0) * 0.5)  # [-0.5, +0.5]
     elif not np.isfinite(prevd) and np.isfinite(newd):
-        shaped = +0.2  # encourage leaving the rack toward aisles
+        shaped = +0.2  # encourage leaving rack toward aisle
     elif np.isfinite(prevd) and not np.isfinite(newd):
-        shaped = -0.2  # discourage stepping into useless zones (shouldn’t happen)
+        shaped = -0.2
 
     step_penalty = -0.3
     return new_pos, shaped + step_penalty, False
@@ -397,7 +384,7 @@ def pretrain_with_astar(starts, goals, epochs=5):
                 positions = [path[t] for _ in range(num_agents)]
                 s = get_state_for_agent(i, positions, goals)
                 move = (path[t+1][0]-path[t][0], path[t+1][1]-path[t][1])
-                a = ACTIONS.index(move) if move in ACTIONS else ACTIONS.index((0,0))
+                a = ACTIONS.index(move) if move in ACTIONS else STOP_IDX
                 q = policy(s)
                 loss = ce(q, torch.tensor([a], device=device))
                 optimizer.zero_grad()
@@ -410,11 +397,12 @@ def pretrain_with_astar(starts, goals, epochs=5):
     print("✅ Pretraining done.\n")
 
 # =========================
-# Training (FIXED pairs)
+# Training (FIXED pairs) + SAFETY SHIELD
 # =========================
 def train(starts, goals, colored_map, total_episodes=1000, max_steps=1500, visualize=True):
     """
     Train with FIXED starts/goals across all episodes.
+    Safety shield: any detected collision turns into a STOP (yield) with a small penalty.
     """
     start_time = time.time()
     cpu_usages=[]
@@ -430,7 +418,7 @@ def train(starts, goals, colored_map, total_episodes=1000, max_steps=1500, visua
     shortest_paths = {f"agent_{i+1}": None for i in range(num_agents)}
     shortest_lengths = {f"agent_{i+1}": float("inf") for i in range(num_agents)}
 
-    # Optional: precompute A* references once (with racks opened at start/goal)
+    # Precompute reference A* once (racks opened at start/goal)
     astar_paths = []
     for i in range(num_agents):
         grid_mod = obstacle_map.copy()
@@ -439,10 +427,10 @@ def train(starts, goals, colored_map, total_episodes=1000, max_steps=1500, visua
         astar_paths.append(astar(grid_mod, starts[i], goals[i]))
 
     for episode in range(1, total_episodes+1):
-        print(f"\n=== Episode {episode}/{total_episodes} (fixed pairs) ===")
+        print(f"\n=== Episode {episode}/{total_episodes} (fixed pairs + shield) ===")
         start_cpu = process.cpu_percent(interval=None)
 
-        # reset BFS cache per episode (goals constant but safer if you change later)
+        # reset BFS cache per episode
         global _dist_cache
         _dist_cache = {}
 
@@ -474,7 +462,7 @@ def train(starts, goals, colored_map, total_episodes=1000, max_steps=1500, visua
 
             for i in range(num_agents):
                 if i in terminated:
-                    chosen_actions[i]=ACTIONS.index((0,0))
+                    chosen_actions[i]=STOP_IDX
                     intended[i]=positions[i]
                     rewards_step[i]=0.0
                     hits[i]=False
@@ -508,12 +496,15 @@ def train(starts, goals, colored_map, total_episodes=1000, max_steps=1500, visua
                     if intended[i]==prev_positions[j] and intended[j]==prev_positions[i]:
                         collision_agents.add(i); collision_agents.add(j)
 
-            # convert collisions to "yield" (keep as in your original logic if preferred)
+            # ===== SAFETY SHIELD: yield instead of collide =====
+            # Force STOP on colliding agents with a small penalty
             for i in collision_agents:
-                rewards_step[i] -= 10.0
-                intended[i] = prev_positions[i]
+                chosen_actions[i] = STOP_IDX
+                intended[i] = prev_positions[i]     # stay put
+                rewards_step[i] -= 1.0              # small penalty (was -10)
                 hits[i] = True
                 episode_collision_count += 1
+            # ================================================
 
             next_positions = intended[:]
             for i in range(num_agents):
@@ -597,7 +588,7 @@ def train(starts, goals, colored_map, total_episodes=1000, max_steps=1500, visua
         snap_ax.grid(visible=True, color="gray", linestyle="-", linewidth=0.5)
         snap_ax.set_xticks(np.arange(-0.5, GRIDSIZE, 1)); snap_ax.set_yticks(np.arange(-0.5, GRIDSIZE, 1))
         snap_ax.set_xticklabels([]); snap_ax.set_yticklabels([])
-        snap_ax.set_title(f"Episode {episode} Paths (Fixed Pairs)")
+        snap_ax.set_title(f"Episode {episode} Paths (Fixed Pairs + Shield)")
         snap_fig.savefig(os.path.join(output_folder, f"map_{episode}.png"), dpi=300)
         plt.close(snap_fig)
 
@@ -617,7 +608,7 @@ def train(starts, goals, colored_map, total_episodes=1000, max_steps=1500, visua
             plt.scatter(*shortest_paths[key][-1], color=AGENT_COLORS[i % len(AGENT_COLORS)], s=100, edgecolors='black', marker='X')
     plt.grid(visible=True, color="gray", linestyle="-", linewidth=0.5)
     plt.xticks(np.arange(-0.5, GRIDSIZE, 1), []); plt.yticks(np.arange(-0.5, GRIDSIZE, 1), [])
-    plt.title("Shortest Paths Found (Fixed Pairs)")
+    plt.title("Shortest Paths Found (Fixed Pairs + Shield)")
     plt.savefig(os.path.join(output_folder, "Shortest_Path.png"), dpi=300)
     plt.close()
 
@@ -628,25 +619,25 @@ def train(starts, goals, colored_map, total_episodes=1000, max_steps=1500, visua
         plt.plot(roll, label="Success Rate (Rolling Avg)")
     else:
         plt.plot(success_rates, label="Success Rate")
-    plt.xlabel("Episodes"); plt.ylabel("Success Rate"); plt.title("Training Convergence - Success Rate (Fixed Pairs)")
+    plt.xlabel("Episodes"); plt.ylabel("Success Rate"); plt.title("Training Convergence - Success Rate (Shield)")
     plt.grid(True); plt.savefig(os.path.join(output_folder, "Success_Rate.png"), dpi=300); plt.close()
 
     # Rewards
     plt.figure(figsize=(10,5))
     plt.plot(total_rewards_history, alpha=0.7)
-    plt.xlabel("Episodes"); plt.ylabel("Total Rewards"); plt.title("Training Convergence - Total Rewards (Fixed Pairs)")
+    plt.xlabel("Episodes"); plt.ylabel("Total Rewards"); plt.title("Training Convergence - Total Rewards (Shield)")
     plt.grid(True); plt.savefig(os.path.join(output_folder, "Total_Rewards.png"), dpi=300); plt.close()
 
     # Collisions
     plt.figure(figsize=(10,5))
     plt.plot(collision_rates, alpha=0.7)
-    plt.xlabel("Episodes"); plt.ylabel("Collision Rates"); plt.title("Training Convergence - Collision Rates (Fixed Pairs)")
+    plt.xlabel("Episodes"); plt.ylabel("Collision Rates"); plt.title("Training Convergence - Collision Rates (Shield)")
     plt.grid(True); plt.savefig(os.path.join(output_folder, "Collision_Rates.png"), dpi=300); plt.close()
 
     # Steps
     plt.figure(figsize=(10,5))
     plt.plot(average_steps_per_episode, alpha=0.7)
-    plt.xlabel("Episodes"); plt.ylabel("Average Taking Steps"); plt.title("Training Convergence - Avg Steps per Episode (Fixed Pairs)")
+    plt.xlabel("Episodes"); plt.ylabel("Average Taking Steps"); plt.title("Training Convergence - Avg Steps per Episode (Shield)")
     plt.grid(True); plt.savefig(os.path.join(output_folder, "Average_Taking_Steps.png"), dpi=300); plt.close()
 
     # ======= Summary Table =======
@@ -697,7 +688,6 @@ def train(starts, goals, colored_map, total_episodes=1000, max_steps=1500, visua
 # Main
 # =========================
 if __name__ == "__main__":
-    # Generate ONCE, then keep fixed for all episodes
     colored_map, starts_init, goals_init = generate_map_with_positions(min_distance=10)
     pretrain_with_astar(starts_init, goals_init, epochs=5)
     train(starts_init, goals_init, colored_map, total_episodes=1000, max_steps=1500, visualize=True)
