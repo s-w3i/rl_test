@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Suggested filename:
-# rack_pickplace_dueling_double_per_fixed_pairs_shield.py
+# rack_pickplace_dueling_double_per_fixed_pairs_shield_dqfd.py
 
 import os
 import time
@@ -40,8 +40,8 @@ AGENT_COLORS = ['blue', 'green', 'purple', 'gray', 'orange', 'brown', 'cyan', 'm
 num_agents = 8
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-# NEW: results folder name with "shield" suffix
-output_folder = "results/rack_pickplace_dueling_double_per_fixed_pairs_shield"
+# NEW: results folder name with "shield_dqfd" suffix
+output_folder = "results/rack_pickplace_dueling_double_per_fixed_pairs_shield_dqfd"
 os.makedirs(output_folder, exist_ok=True)
 
 # =========================
@@ -182,7 +182,7 @@ def get_state_for_agent(agent_idx:int, positions:List[Tuple[int,int]], goals:Lis
     return torch.from_numpy(s).unsqueeze(0).to(device)
 
 # =========================
-# Dueling DQN (shared)
+# Dueling DQN with Distance Head
 # =========================
 class DuelingDQN(nn.Module):
     def __init__(self, input_channels, action_size):
@@ -195,15 +195,18 @@ class DuelingDQN(nn.Module):
         self.fc = nn.Linear(64*GRIDSIZE*GRIDSIZE, 256)
         self.val = nn.Linear(256, 1)
         self.adv = nn.Linear(256, action_size)
+        self.dist_head = nn.Linear(256, 1)  # predicts normalized BFS distance
 
     def forward(self, x):
         x = self.relu(self.conv1(x))
         x = self.relu(self.conv2(x))
         x = self.relu(self.conv3(x))
-        x = self.relu(self.fc(self.flatten(x)))
-        V = self.val(x)
-        A = self.adv(x)
-        return V + (A - A.mean(dim=1, keepdim=True))
+        trunk = self.relu(self.fc(self.flatten(x)))
+        V = self.val(trunk)
+        A = self.adv(trunk)
+        q = V + (A - A.mean(dim=1, keepdim=True))
+        dist = self.dist_head(trunk)
+        return q, dist  # return both
 
 policy = DuelingDQN(INPUT_CHANNELS, ACTION_SIZE).to(device)
 target = DuelingDQN(INPUT_CHANNELS, ACTION_SIZE).to(device)
@@ -211,7 +214,7 @@ target.load_state_dict(policy.state_dict())
 optimizer = optim.Adam(policy.parameters(), lr=3e-4)
 
 # =========================
-# PER
+# PER (store dist target as well)
 # =========================
 class PrioritizedReplayBuffer:
     def __init__(self, capacity:int):
@@ -219,6 +222,7 @@ class PrioritizedReplayBuffer:
         self.priorities = deque(maxlen=capacity)
 
     def add(self, transition, priority:float):
+        # transition = (s, a, r, ns, d, dist_target)
         self.buffer.append(transition)
         self.priorities.append(priority)
 
@@ -236,21 +240,53 @@ class PrioritizedReplayBuffer:
         samples = [self.buffer[i] for i in idxs]
         imp = (len(self.buffer) * prob[idxs]) ** (-beta)
         imp = imp / imp.max()
-        s = torch.cat([t[0] for t in samples]).to(device)
-        a = torch.tensor([t[1] for t in samples], dtype=torch.long, device=device).unsqueeze(1)
-        r = torch.tensor([t[2] for t in samples], dtype=torch.float32, device=device).unsqueeze(1)
+        s  = torch.cat([t[0] for t in samples]).to(device)
+        a  = torch.tensor([t[1] for t in samples], dtype=torch.long, device=device).unsqueeze(1)
+        r  = torch.tensor([t[2] for t in samples], dtype=torch.float32, device=device).unsqueeze(1)
         ns = torch.cat([t[3] for t in samples]).to(device)
-        d = torch.tensor([t[4] for t in samples], dtype=torch.float32, device=device).unsqueeze(1)
+        d  = torch.tensor([t[4] for t in samples], dtype=torch.float32, device=device).unsqueeze(1)
+        dist_t = torch.tensor([t[5] for t in samples], dtype=torch.float32, device=device).unsqueeze(1)
         iw = torch.tensor(imp, dtype=torch.float32, device=device).unsqueeze(1)
-        return s, a, r, ns, d, iw, idxs
+        return s, a, r, ns, d, dist_t, iw, idxs
 
     def update_priorities(self, idxs, new_p, eps=1e-3):
         for i,p in zip(idxs, new_p):
             self.priorities[i] = float(abs(p)) + eps
 
-memory = PrioritizedReplayBuffer(50000)
+memory = PrioritizedReplayBuffer(70000)
 alpha = 0.6
 beta_start, beta_end = 0.4, 1.0
+
+# =========================
+# Demo buffer + DQfD margin loss
+# =========================
+class DemoBuffer:
+    def __init__(self):
+        self.s = []
+        self.a = []
+    def add_many(self, demos):
+        for s,a in demos:
+            self.s.append(s)
+            self.a.append(a)
+    def __len__(self): return len(self.s)
+    def sample(self, n):
+        if len(self.s) == 0:
+            return None, None
+        idx = np.random.choice(len(self.s), size=min(n, len(self.s)), replace=False)
+        S = torch.cat([self.s[i] for i in idx], dim=0).to(device)
+        A = torch.tensor([self.a[i] for i in idx], dtype=torch.long, device=device)
+        return S, A
+
+demo_buffer = DemoBuffer()
+
+def dqfd_margin_loss(q, expert_a, margin=0.8):
+    # q: [B, A], expert_a: [B]
+    one_hot = F.one_hot(expert_a, num_classes=ACTION_SIZE).float()
+    q_exp = (q * one_hot).sum(dim=1, keepdim=True)           # [B,1]
+    q_others = q + margin * (1.0 - one_hot)
+    max_others, _ = q_others.max(dim=1, keepdim=True)        # [B,1]
+    loss = F.relu(max_others - q_exp)
+    return loss.mean()
 
 # =========================
 # Action Masking (allow entering OWN goal rack)
@@ -292,6 +328,13 @@ def distance_map_to(goal:Tuple[int,int]):
                 q.append((nx,ny))
     _dist_cache[goal] = D
     return D
+
+def normalized_distance(pos:Tuple[int,int], goal:Tuple[int,int]):
+    D = distance_map_to(goal)
+    d = D[pos[1], pos[0]]
+    if not np.isfinite(d):
+        d = GRIDSIZE * 2.0  # cap for rack cells
+    return float(np.clip(d / (GRIDSIZE*2.0), 0.0, 1.0))
 
 # =========================
 # Env Step (with rack semantics + BFS shaping)
@@ -366,43 +409,79 @@ def update_visualization(fig, ax, scat, positions, path_lines, paths, episode_nu
     plt.pause(0.01)
 
 # =========================
-# Pretraining (A* with rack starts/goals)
+# A* Demos (collection + pretrain)
 # =========================
-def pretrain_with_astar(starts, goals, epochs=5):
-    print("🔁 Behavior-cloning pretrain on A* ...")
-    ce = nn.CrossEntropyLoss()
-    for ep in range(epochs):
-        cnt = 0
+def collect_astar_demos(num_pairs=1200):
+    demos = []  # list of (state_tensor, expert_action)
+    tries = 0
+    while len(demos) < num_pairs and tries < num_pairs*25:
+        tries += 1
+        _, starts, goals = generate_map_with_positions(min_distance=10)
         for i in range(num_agents):
             grid_mod = obstacle_map.copy()
             grid_mod[starts[i][1], starts[i][0]] = 0
             grid_mod[goals[i][1], goals[i][0]] = 0
             path = astar(grid_mod, starts[i], goals[i])
-            if not path or len(path)<2: 
+            if not path or len(path) < 2:
                 continue
             for t in range(len(path)-1):
                 positions = [path[t] for _ in range(num_agents)]
                 s = get_state_for_agent(i, positions, goals)
                 move = (path[t+1][0]-path[t][0], path[t+1][1]-path[t][1])
                 a = ACTIONS.index(move) if move in ACTIONS else STOP_IDX
-                q = policy(s)
-                loss = ce(q, torch.tensor([a], device=device))
-                optimizer.zero_grad()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(policy.parameters(), 10.0)
-                optimizer.step()
-                cnt += 1
-        print(f"  epoch {ep+1}/{epochs} steps={cnt}")
+                demos.append((s, a))
+    random.shuffle(demos)
+    return demos
+
+def pretrain_with_demos(demos, epochs=10):
+    print(f"🔁 Pretraining on {len(demos)} A* samples ...")
+    ce = nn.CrossEntropyLoss()
+    opt = optim.Adam(policy.parameters(), lr=1e-4)  # smaller LR = stabler features
+    bs = 256
+    for ep in range(epochs):
+        random.shuffle(demos)
+        total = 0.0; steps = 0
+        for k in range(0, len(demos), bs):
+            batch = demos[k:k+bs]
+            s = torch.cat([b[0] for b in batch], dim=0).to(device)
+            a = torch.tensor([b[1] for b in batch], dtype=torch.long, device=device)
+            q, _ = policy(s)
+            loss = ce(q, a)
+            opt.zero_grad(); loss.backward()
+            torch.nn.utils.clip_grad_norm_(policy.parameters(), 10.0)
+            opt.step()
+            total += float(loss.item()); steps += 1
+        print(f"  epoch {ep+1}/{epochs}  loss={total/max(1,steps):.4f}")
     target.load_state_dict(policy.state_dict())
     print("✅ Pretraining done.\n")
 
 # =========================
-# Training (FIXED pairs) + SAFETY SHIELD
+# Helpers: A* suggestion + schedules
+# =========================
+def astar_suggestion(pos, path):
+    if not path: return STOP_IDX
+    try:
+        k = path.index(pos)
+        if k < len(path)-1:
+            dx = path[k+1][0]-pos[0]; dy = path[k+1][1]-pos[1]
+            return ACTIONS.index((dx,dy)) if (dx,dy) in ACTIONS else STOP_IDX
+    except ValueError:
+        pass
+    return STOP_IDX
+
+def linear_decay(start, end, frac):
+    frac = float(np.clip(frac, 0.0, 1.0))
+    return start + (end - start) * frac
+
+# =========================
+# Training (FIXED pairs) + SAFETY SHIELD + DQfD
 # =========================
 def train(starts, goals, colored_map, total_episodes=1000, max_steps=1500, visualize=True):
     """
     Train with FIXED starts/goals across all episodes.
-    Safety shield: any detected collision turns into a STOP (yield) with a small penalty.
+    Safety shield: collisions -> STOP with small penalty.
+    DQfD: margin imitation loss + teacher forcing + demo priority.
+    Dist head: predict normalized BFS distance.
     """
     start_time = time.time()
     cpu_usages=[]
@@ -411,9 +490,15 @@ def train(starts, goals, colored_map, total_episodes=1000, max_steps=1500, visua
     success_rates=[]; total_rewards_history=[]; collision_rates=[]; average_steps_per_episode=[]
     window_size=50
 
-    epsilon_start, epsilon_end = 1.0, 0.05
+    epsilon_start, epsilon_end = 1.0, 0.10     # keep a bit more exploration floor
     epsilon_decay_episodes = int(total_episodes*0.6)
     beta = beta_start
+
+    # Imitation schedules
+    demo_ratio_start, demo_ratio_end = 0.30, 0.00  # teacher forcing
+    bc_lambda_start, bc_lambda_end = 0.30, 0.00    # margin loss weight
+    bc_decay_begin = 0.60                           # start decaying at 60% of training
+    bc_decay_end   = 0.90                           # end decay at 90%
 
     shortest_paths = {f"agent_{i+1}": None for i in range(num_agents)}
     shortest_lengths = {f"agent_{i+1}": float("inf") for i in range(num_agents)}
@@ -427,14 +512,26 @@ def train(starts, goals, colored_map, total_episodes=1000, max_steps=1500, visua
         astar_paths.append(astar(grid_mod, starts[i], goals[i]))
 
     for episode in range(1, total_episodes+1):
-        print(f"\n=== Episode {episode}/{total_episodes} (fixed pairs + shield) ===")
+        print(f"\n=== Episode {episode}/{total_episodes} (shield + DQfD) ===")
         start_cpu = process.cpu_percent(interval=None)
 
         # reset BFS cache per episode
         global _dist_cache
         _dist_cache = {}
 
-        # per-episode clean viz
+        # schedules
+        frac_total = episode / total_episodes
+        demo_ratio = linear_decay(demo_ratio_start, demo_ratio_end, frac_total / 0.70) if frac_total <= 0.70 else 0.0
+        if frac_total <= bc_decay_begin:
+            bc_lambda = bc_lambda_start
+        elif frac_total >= bc_decay_end:
+            bc_lambda = bc_lambda_end
+        else:
+            # linear decay between begin and end
+            t = (frac_total - bc_decay_begin) / (bc_decay_end - bc_decay_begin)
+            bc_lambda = linear_decay(bc_lambda_start, bc_lambda_end, t)
+
+        # per-episode viz
         fig_vis=ax_vis=scat=path_lines=paths=None
         if visualize:
             fig_vis, ax_vis, scat, path_lines, paths = init_visualization(colored_map, starts, episode)
@@ -469,10 +566,15 @@ def train(starts, goals, colored_map, total_episodes=1000, max_steps=1500, visua
                     continue
 
                 s_i = get_state_for_agent(i, positions, goals)
-                q = policy(s_i)
-                q = mask_invalid_actions(q, positions[i], goals[i])
+                q_raw, _ = policy(s_i)
+                q = mask_invalid_actions(q_raw, positions[i], goals[i])
 
-                a = random.randint(0, ACTION_SIZE-1) if random.random() < epsilon else q.argmax(dim=1).item()
+                # A* teacher forcing (decaying)
+                a_astar = astar_suggestion(positions[i], astar_paths[i])
+                if random.random() < demo_ratio:
+                    a = a_astar
+                else:
+                    a = random.randint(0, ACTION_SIZE-1) if random.random() < epsilon else q.argmax(dim=1).item()
 
                 nxt_pos, rew, hit = step_single(positions[i], a, goals[i])
                 chosen_actions[i]=a; intended[i]=nxt_pos; rewards_step[i]=rew; hits[i]=hit
@@ -497,11 +599,10 @@ def train(starts, goals, colored_map, total_episodes=1000, max_steps=1500, visua
                         collision_agents.add(i); collision_agents.add(j)
 
             # ===== SAFETY SHIELD: yield instead of collide =====
-            # Force STOP on colliding agents with a small penalty
             for i in collision_agents:
                 chosen_actions[i] = STOP_IDX
-                intended[i] = prev_positions[i]     # stay put
-                rewards_step[i] -= 1.0              # small penalty (was -10)
+                intended[i] = prev_positions[i]
+                rewards_step[i] -= 1.0              # small penalty (shielded)
                 hits[i] = True
                 episode_collision_count += 1
             # ================================================
@@ -509,10 +610,18 @@ def train(starts, goals, colored_map, total_episodes=1000, max_steps=1500, visua
             next_positions = intended[:]
             for i in range(num_agents):
                 if i in terminated: continue
-                s_i = get_state_for_agent(i, positions, goals)
+                s_i  = get_state_for_agent(i, positions, goals)
                 ns_i = get_state_for_agent(i, next_positions, goals)
-                d_i = float(next_positions[i]==goals[i])
-                memory.add((s_i, chosen_actions[i], rewards_step[i], ns_i, d_i), priority=1.0)
+                d_i  = float(next_positions[i]==goals[i])
+                # distance target for current state (normalized)
+                dist_t_i = normalized_distance(positions[i], goals[i])
+
+                # Demo priority boost if action matches A* suggestion at this state
+                exp_priority = 1.0
+                a_astar = astar_suggestion(positions[i], astar_paths[i])
+                if chosen_actions[i] == a_astar:
+                    exp_priority = 2.0  # bonus
+                memory.add((s_i, chosen_actions[i], rewards_step[i], ns_i, d_i, dist_t_i), priority=exp_priority)
 
             positions = next_positions[:]
             if visualize and scat is not None:
@@ -529,33 +638,52 @@ def train(starts, goals, colored_map, total_episodes=1000, max_steps=1500, visua
             if len(terminated)==num_agents: done=True
             if step_count>=max_steps: done=True
 
-            if len(memory) >= 2048:
-                states, actions, rewards_b, next_states, dones, iw, idxs = memory.sample(
-                    batch_size=128, alpha=alpha, beta=beta)
+            # ------------------- Learning step -------------------
+            if len(memory) >= 10000:  # longer warmup to stabilize
+                states, actions, rewards_b, next_states, dones, dist_targets_b, iw, idxs = memory.sample(
+                    batch_size=256, alpha=alpha, beta=beta)
 
                 with torch.no_grad():
-                    online_next = policy(next_states)
+                    online_next, _ = policy(next_states)
                     next_actions = online_next.argmax(dim=1, keepdim=True)
-                    target_next = target(next_states).gather(1, next_actions)
+                    target_next, _ = target(next_states)
+                    target_next = target_next.gather(1, next_actions)
                     targets = rewards_b + 0.99 * target_next * (1.0 - dones)
 
-                q = policy(states).gather(1, actions)
+                q_pred, dist_pred = policy(states)
+                q_taken = q_pred.gather(1, actions)
 
-                loss_element = F.smooth_l1_loss(q, targets, reduction='none')
-                loss = (iw * loss_element).mean()
+                # TD loss
+                loss_element = F.smooth_l1_loss(q_taken, targets, reduction='none')
+                td_loss = (iw * loss_element).mean()
+
+                # DQfD margin imitation (small, steady)
+                bc_loss = torch.tensor(0.0, device=device)
+                S_demo, A_demo = demo_buffer.sample(n=128)
+                if S_demo is not None:
+                    q_demo, _ = policy(S_demo)
+                    bc_loss = dqfd_margin_loss(q_demo, A_demo, margin=0.8)
+
+                # Distance head supervision
+                dist_loss = F.smooth_l1_loss(dist_pred, dist_targets_b)
+
+                loss = td_loss + bc_lambda * bc_loss + 0.1 * dist_loss
 
                 optimizer.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(policy.parameters(), 10.0)
                 optimizer.step()
 
-                td_err = (targets - q).detach().cpu().numpy().flatten()
+                # Update PER priorities by TD error magnitude
+                td_err = (targets - q_taken).detach().cpu().numpy().flatten()
                 memory.update_priorities(idxs, td_err)
 
+                # Soft update target
                 with torch.no_grad():
-                    tau = 0.005
+                    tau = 0.01
                     for tp, p in zip(target.parameters(), policy.parameters()):
                         tp.data.mul_(1.0 - tau).add_(tau * p.data)
+            # -----------------------------------------------------
 
         successful_agents = sorted([i+1 for i in range(num_agents) if i in terminated])
         print(f"Robots reached goal this episode: {successful_agents if successful_agents else 'None'}")
@@ -588,7 +716,7 @@ def train(starts, goals, colored_map, total_episodes=1000, max_steps=1500, visua
         snap_ax.grid(visible=True, color="gray", linestyle="-", linewidth=0.5)
         snap_ax.set_xticks(np.arange(-0.5, GRIDSIZE, 1)); snap_ax.set_yticks(np.arange(-0.5, GRIDSIZE, 1))
         snap_ax.set_xticklabels([]); snap_ax.set_yticklabels([])
-        snap_ax.set_title(f"Episode {episode} Paths (Fixed Pairs + Shield)")
+        snap_ax.set_title(f"Episode {episode} Paths (Shield + DQfD)")
         snap_fig.savefig(os.path.join(output_folder, f"map_{episode}.png"), dpi=300)
         plt.close(snap_fig)
 
@@ -608,7 +736,7 @@ def train(starts, goals, colored_map, total_episodes=1000, max_steps=1500, visua
             plt.scatter(*shortest_paths[key][-1], color=AGENT_COLORS[i % len(AGENT_COLORS)], s=100, edgecolors='black', marker='X')
     plt.grid(visible=True, color="gray", linestyle="-", linewidth=0.5)
     plt.xticks(np.arange(-0.5, GRIDSIZE, 1), []); plt.yticks(np.arange(-0.5, GRIDSIZE, 1), [])
-    plt.title("Shortest Paths Found (Fixed Pairs + Shield)")
+    plt.title("Shortest Paths Found (Shield + DQfD)")
     plt.savefig(os.path.join(output_folder, "Shortest_Path.png"), dpi=300)
     plt.close()
 
@@ -619,25 +747,25 @@ def train(starts, goals, colored_map, total_episodes=1000, max_steps=1500, visua
         plt.plot(roll, label="Success Rate (Rolling Avg)")
     else:
         plt.plot(success_rates, label="Success Rate")
-    plt.xlabel("Episodes"); plt.ylabel("Success Rate"); plt.title("Training Convergence - Success Rate (Shield)")
+    plt.xlabel("Episodes"); plt.ylabel("Success Rate"); plt.title("Training Convergence - Success Rate (Shield + DQfD)")
     plt.grid(True); plt.savefig(os.path.join(output_folder, "Success_Rate.png"), dpi=300); plt.close()
 
     # Rewards
     plt.figure(figsize=(10,5))
     plt.plot(total_rewards_history, alpha=0.7)
-    plt.xlabel("Episodes"); plt.ylabel("Total Rewards"); plt.title("Training Convergence - Total Rewards (Shield)")
+    plt.xlabel("Episodes"); plt.ylabel("Total Rewards"); plt.title("Training Convergence - Total Rewards (Shield + DQfD)")
     plt.grid(True); plt.savefig(os.path.join(output_folder, "Total_Rewards.png"), dpi=300); plt.close()
 
     # Collisions
     plt.figure(figsize=(10,5))
     plt.plot(collision_rates, alpha=0.7)
-    plt.xlabel("Episodes"); plt.ylabel("Collision Rates"); plt.title("Training Convergence - Collision Rates (Shield)")
+    plt.xlabel("Episodes"); plt.ylabel("Collision Rates"); plt.title("Training Convergence - Collision Rates (Shield + DQfD)")
     plt.grid(True); plt.savefig(os.path.join(output_folder, "Collision_Rates.png"), dpi=300); plt.close()
 
     # Steps
     plt.figure(figsize=(10,5))
     plt.plot(average_steps_per_episode, alpha=0.7)
-    plt.xlabel("Episodes"); plt.ylabel("Average Taking Steps"); plt.title("Training Convergence - Avg Steps per Episode (Shield)")
+    plt.xlabel("Episodes"); plt.ylabel("Average Taking Steps"); plt.title("Training Convergence - Avg Steps (Shield + DQfD)")
     plt.grid(True); plt.savefig(os.path.join(output_folder, "Average_Taking_Steps.png"), dpi=300); plt.close()
 
     # ======= Summary Table =======
@@ -688,6 +816,9 @@ def train(starts, goals, colored_map, total_episodes=1000, max_steps=1500, visua
 # Main
 # =========================
 if __name__ == "__main__":
+    # Build demos, pretrain, then train with shield + DQfD
     colored_map, starts_init, goals_init = generate_map_with_positions(min_distance=10)
-    pretrain_with_astar(starts_init, goals_init, epochs=5)
-    train(starts_init, goals_init, colored_map, total_episodes=1000, max_steps=1500, visualize=True)
+    demos = collect_astar_demos(num_pairs=1500)   # 800–3000 is reasonable
+    demo_buffer.add_many(demos)
+    pretrain_with_demos(demos, epochs=12)
+    train(starts_init, goals_init, colored_map, total_episodes=1200, max_steps=1500, visualize=True)
