@@ -1,0 +1,632 @@
+building_name: test_field
+levels:
+  L1:
+    lanes:
+    - - 0
+      - 1
+      - {is_bidirectional: false, speed_limit: 0}
+    - - 1
+      - 2
+      - {is_bidirectional: false, speed_limit: 0}
+    - - 2
+      - 3
+      - {speed_limit: 0}
+    - - 3
+      - 2
+      - {speed_limit: 0}
+    - - 4
+      - 5
+      - {is_bidirectional: false, speed_limit: 0}
+    - - 5
+      - 6
+      - {is_bidirectional: false, speed_limit: 0}
+    - - 7
+      - 4
+      - {is_bidirectional: false, speed_limit: 0}
+    - - 8
+      - 9
+      - {is_bidirectional: false, speed_limit: 0}
+    - - 9
+      - 0
+      - {is_bidirectional: false, speed_limit: 0}
+    - - 10
+      - 8
+      - {is_bidirectional: false, speed_limit: 0}
+    - - 11
+      - 2
+      - {is_bidirectional: false, speed_limit: 0}
+    - - 12
+      - 13
+      - {speed_limit: 0}
+    - - 13
+      - 12
+      - {speed_limit: 0}
+    - - 13
+      - 11
+      - {speed_limit: 0}
+    - - 11
+      - 13
+      - {speed_limit: 0}
+    - - 12
+      - 14
+      - {speed_limit: 0}
+    - - 14
+      - 12
+      - {speed_limit: 0}
+    - - 14
+      - 15
+      - {speed_limit: 0}
+    - - 15
+      - 14
+      - {speed_limit: 0}
+    - - 3
+      - 16
+      - {speed_limit: 0}
+    - - 16
+      - 3
+      - {speed_limit: 0}
+    - - 17
+      - 18
+      - {is_bidirectional: false, speed_limit: 0}
+    - - 18
+      - 19
+      - {speed_limit: 0}
+    - - 19
+      - 18
+      - {speed_limit: 0}
+    - - 19
+      - 20
+      - {speed_limit: 0}
+    - - 20
+      - 19
+      - {speed_limit: 0}
+    - - 19
+      - 21
+      - {speed_limit: 0}
+    - - 21
+      - 19
+      - {speed_limit: 0}
+    - - 21
+      - 22
+      - {speed_limit: 0}
+    - - 22
+      - 21
+      - {speed_limit: 0}
+    - - 22
+      - 23
+      - {speed_limit: 0}
+    - - 23
+      - 22
+      - {speed_limit: 0}
+    - - 23
+      - 24
+      - {speed_limit: 0}
+    - - 24
+      - 23
+      - {speed_limit: 0}
+    - - 24
+      - 25
+      - {speed_limit: 0}
+    - - 25
+      - 24
+      - {speed_limit: 0}
+    - - 25
+      - 26
+      - {speed_limit: 0}
+    - - 26
+      - 25
+      - {speed_limit: 0}
+    - - 27
+      - 28
+      - {speed_limit: 0}
+    - - 28
+      - 27
+      - {speed_limit: 0}
+    - - 28
+      - 29
+      - {speed_limit: 0}
+    - - 29
+      - 28
+      - {speed_limit: 0}
+    - - 29
+      - 30
+      - {speed_limit: 0}
+    - - 30
+      - 29
+      - {speed_limit: 0}
+    - - 30
+      - 31
+      - {speed_limit: 0}
+    - - 31
+      - 30
+      - {speed_limit: 0}
+    - - 31
+      - 32
+      - {speed_limit: 0}
+    - - 32
+      - 31
+      - {speed_limit: 0}
+    - - 32
+      - 33
+      - {speed_limit: 0}
+    - - 33
+      - 32
+      - {speed_limit: 0}
+    - - 33
+      - 7
+      - {is_bidirectional: false, speed_limit: 0}
+    - - 6
+      - 34
+      - {is_bidirectional: false, speed_limit: 0}
+    - - 34
+      - 35
+      - {speed_limit: 0}
+    - - 35
+      - 34
+      - {speed_limit: 0}
+    - - 35
+      - 32
+      - {speed_limit: 0}
+    - - 32
+      - 35
+      - {speed_limit: 0}
+    - - 34
+      - 36
+      - {speed_limit: 0}
+    - - 36
+      - 34
+      - {speed_limit: 0}
+    - - 36
+      - 10
+      - {is_bidirectional: false, speed_limit: 0}
+    - - 37
+      - 36
+      - {is_bidirectional: false, speed_limit: 0}
+    - - 2
+      - 37
+      - {is_bidirectional: false, speed_limit: 0}
+    - - 37
+      - 16
+      - {speed_limit: 0}
+    - - 16
+      - 37
+      - {speed_limit: 0}
+    - - 16
+      - 15
+      - {speed_limit: 0}
+    - - 15
+      - 16
+      - {speed_limit: 0}
+    - - 15
+      - 38
+      - {speed_limit: 0}
+    - - 38
+      - 15
+      - {speed_limit: 0}
+    - - 38
+      - 39
+      - {speed_limit: 0}
+    - - 39
+      - 38
+      - {speed_limit: 0}
+    - - 39
+      - 40
+      - {speed_limit: 0}
+    - - 40
+      - 39
+      - {speed_limit: 0}
+    - - 40
+      - 41
+      - {speed_limit: 0}
+    - - 41
+      - 40
+      - {speed_limit: 0}
+    - - 41
+      - 23
+      - {speed_limit: 0}
+    - - 23
+      - 41
+      - {speed_limit: 0}
+    - - 41
+      - 42
+      - {speed_limit: 0}
+    - - 42
+      - 41
+      - {speed_limit: 0}
+    - - 40
+      - 43
+      - {speed_limit: 0}
+    - - 43
+      - 40
+      - {speed_limit: 0}
+    - - 39
+      - 44
+      - {speed_limit: 0}
+    - - 44
+      - 39
+      - {speed_limit: 0}
+    - - 38
+      - 45
+      - {speed_limit: 0}
+    - - 45
+      - 38
+      - {speed_limit: 0}
+    - - 15
+      - 46
+      - {speed_limit: 0}
+    - - 46
+      - 15
+      - {speed_limit: 0}
+    - - 16
+      - 47
+      - {speed_limit: 0}
+    - - 47
+      - 16
+      - {speed_limit: 0}
+    - - 27
+      - 48
+      - {speed_limit: 0}
+    - - 48
+      - 27
+      - {speed_limit: 0}
+    - - 28
+      - 49
+      - {speed_limit: 0}
+    - - 49
+      - 28
+      - {speed_limit: 0}
+    - - 48
+      - 25
+      - {speed_limit: 0}
+    - - 25
+      - 48
+      - {speed_limit: 0}
+    - - 42
+      - 24
+      - {speed_limit: 0}
+    - - 24
+      - 42
+      - {speed_limit: 0}
+    - - 29
+      - 50
+      - {speed_limit: 0}
+    - - 50
+      - 29
+      - {speed_limit: 0}
+    - - 30
+      - 51
+      - {speed_limit: 0}
+    - - 51
+      - 30
+      - {speed_limit: 0}
+    - - 31
+      - 52
+      - {speed_limit: 0}
+    - - 52
+      - 31
+      - {speed_limit: 0}
+    - - 22
+      - 20
+      - {speed_limit: 0}
+    - - 20
+      - 22
+      - {speed_limit: 0}
+    - - 41
+      - 20
+      - {speed_limit: 0}
+    - - 20
+      - 41
+      - {speed_limit: 0}
+    - - 40
+      - 17
+      - {speed_limit: 0}
+    - - 17
+      - 40
+      - {speed_limit: 0}
+    - - 13
+      - 3
+      - {speed_limit: 0}
+    - - 3
+      - 13
+      - {speed_limit: 0}
+    - - 14
+      - 3
+      - {speed_limit: 0}
+    - - 3
+      - 14
+      - {speed_limit: 0}
+    - - 5
+      - 8
+      - {is_bidirectional: false, speed_limit: 0}
+    - - 19
+      - 20
+      - {speed_limit: 0}
+    - - 20
+      - 19
+      - {speed_limit: 0}
+    - - 20
+      - 41
+      - {speed_limit: 0}
+    - - 41
+      - 20
+      - {speed_limit: 0}
+    - - 20
+      - 17
+      - {speed_limit: 0}
+    - - 17
+      - 20
+      - {speed_limit: 0}
+    - - 48
+      - 42
+      - {speed_limit: 0}
+    - - 42
+      - 48
+      - {speed_limit: 0}
+    - - 49
+      - 43
+      - {speed_limit: 0}
+    - - 43
+      - 49
+      - {speed_limit: 0}
+    - - 50
+      - 44
+      - {speed_limit: 0}
+    - - 44
+      - 50
+      - {speed_limit: 0}
+    - - 51
+      - 45
+      - {speed_limit: 0}
+    - - 45
+      - 51
+      - {speed_limit: 0}
+    - - 52
+      - 46
+      - {speed_limit: 0}
+    - - 46
+      - 52
+      - {speed_limit: 0}
+    - - 35
+      - 47
+      - {speed_limit: 0}
+    - - 47
+      - 35
+      - {speed_limit: 0}
+    - - 47
+      - 36
+      - {speed_limit: 0}
+    - - 36
+      - 47
+      - {speed_limit: 0}
+    - - 48
+      - 49
+      - {speed_limit: 0}
+    - - 49
+      - 48
+      - {speed_limit: 0}
+    - - 42
+      - 43
+      - {speed_limit: 0}
+    - - 43
+      - 42
+      - {speed_limit: 0}
+    - - 49
+      - 50
+      - {speed_limit: 0}
+    - - 50
+      - 49
+      - {speed_limit: 0}
+    - - 43
+      - 44
+      - {speed_limit: 0}
+    - - 44
+      - 43
+      - {speed_limit: 0}
+    - - 44
+      - 45
+      - {speed_limit: 0}
+    - - 45
+      - 44
+      - {speed_limit: 0}
+    - - 45
+      - 46
+      - {speed_limit: 0}
+    - - 46
+      - 45
+      - {speed_limit: 0}
+    - - 50
+      - 51
+      - {speed_limit: 0}
+    - - 51
+      - 50
+      - {speed_limit: 0}
+    - - 51
+      - 52
+      - {speed_limit: 0}
+    - - 52
+      - 51
+      - {speed_limit: 0}
+    - - 52
+      - 35
+      - {speed_limit: 0}
+    - - 35
+      - 52
+      - {speed_limit: 0}
+    - - 46
+      - 47
+      - {speed_limit: 0}
+    - - 47
+      - 46
+      - {speed_limit: 0}
+    - - 33
+      - 34
+      - {speed_limit: 0}
+    - - 34
+      - 33
+      - {speed_limit: 0}
+    - - 27
+      - 26
+      - {speed_limit: 0}
+    - - 26
+      - 27
+      - {speed_limit: 0}
+    vertices:
+    - - 6.754308276552282
+      - -14.261485310045105
+      - {name: G110}
+    - - 6.754308276552282
+      - -12.755747796164023
+      - {name: G111}
+    - - 6.754308276552282
+      - -11.250010282282942
+      - {name: G112}
+    - - 6.754308276552282
+      - -9.744272768401858
+      - {name: G113, pickup_dispenser: G113, spawn_robot_name: AGV3, spawn_robot_type: TinyRobot}
+    - - 0.752868756940541
+      - -14.261485310045105
+      - {is_charger: true, name: G150, spawn_robot_name: AGV4, spawn_robot_type: TinyRobot}
+    - - 2.258606270821623
+      - -14.261485310045105
+      - {name: G140}
+    - - 2.258606270821623
+      - -12.755747796164023
+      - {name: G141}
+    - - 0.752868756940541
+      - -12.755747796164023
+      - {name: G151}
+    - - 3.764343784702705
+      - -14.261485310045105
+      - {name: G130}
+    - - 5.2485707626712
+      - -14.261485310045105
+      - {dropoff_ingestor: workstation, name: G120}
+    - - 3.764343784702705
+      - -12.755747796164023
+      - {name: G131}
+    - - 8.238535254520777
+      - -11.250010282282942
+      - {name: G102}
+    - - 8.238535254520777
+      - -8.238535254520777
+      - {name: G104, spawn_robot_name: AGV2, spawn_robot_type: TinyRobot}
+    - - 8.238535254520777
+      - -9.744272768401858
+      - {name: G103}
+    - - 6.754308276552282
+      - -8.238535254520777
+      - {name: G114, pickup_dispenser: G114}
+    - - 5.2485707626712
+      - -8.238535254520777
+      - {name: G124}
+    - - 5.2485707626712
+      - -9.744272768401858
+      - {name: G123}
+    - - 6.754308276552282
+      - -3.764343784702705
+      - {name: G117, pickup_dispenser: G117}
+    - - 8.238535254520777
+      - -3.764343784702705
+      - {name: G107, spawn_robot_name: AGV1, spawn_robot_type: TinyRobot}
+    - - 8.238535254520777
+      - -2.258606270821623
+      - {name: G108}
+    - - 6.754308276552282
+      - -2.258606270821623
+      - {name: G118, pickup_dispenser: G118}
+    - - 8.238535254520777
+      - -0.752868756940541
+      - {name: G109}
+    - - 6.754308276552282
+      - -0.752868756940541
+      - {name: G119}
+    - - 5.2485707626712
+      - -0.752868756940541
+      - {name: G129}
+    - - 3.764343784702705
+      - -0.752868756940541
+      - {name: G139}
+    - - 2.258606270821623
+      - -0.752868756940541
+      - {name: G149}
+    - - 0.752868756940541
+      - -0.752868756940541
+      - {name: G159}
+    - - 0.752868756940541
+      - -2.258606270821623
+      - {name: G158}
+    - - 0.752868756940541
+      - -3.764343784702705
+      - {name: G157}
+    - - 0.752868756940541
+      - -5.2485707626712
+      - {name: G156}
+    - - 0.752868756940541
+      - -6.754308276552282
+      - {name: G155}
+    - - 0.752868756940541
+      - -8.238535254520777
+      - {name: G154}
+    - - 0.752868756940541
+      - -9.744272768401858
+      - {name: G153}
+    - - 0.752868756940541
+      - -11.250010282282942
+      - {name: G152}
+    - - 2.258606270821623
+      - -11.250010282282942
+      - {name: G142}
+    - - 2.258606270821623
+      - -9.744272768401858
+      - {name: G143, pickup_dispenser: G143}
+    - - 3.764343784702705
+      - -11.250010282282942
+      - {name: G132}
+    - - 5.2485707626712
+      - -11.250010282282942
+      - {name: G122}
+    - - 5.2485707626712
+      - -6.754308276552282
+      - {name: G125}
+    - - 5.2485707626712
+      - -5.2485707626712
+      - {name: G126}
+    - - 5.2485707626712
+      - -3.764343784702705
+      - {name: G127}
+    - - 5.2485707626712
+      - -2.258606270821623
+      - {name: G128}
+    - - 3.764343784702705
+      - -2.258606270821623
+      - {name: G138, pickup_dispenser: G138}
+    - - 3.764343784702705
+      - -3.764343784702705
+      - {name: G137, pickup_dispenser: G137}
+    - - 3.764343784702705
+      - -5.2485707626712
+      - {name: G136, pickup_dispenser: G136}
+    - - 3.764343784702705
+      - -6.754308276552282
+      - {name: G135, pickup_dispenser: G135}
+    - - 3.764343784702705
+      - -8.238535254520777
+      - {name: G134, pickup_dispenser: G134}
+    - - 3.764343784702705
+      - -9.744272768401858
+      - {name: G133, pickup_dispenser: G133}
+    - - 2.258606270821623
+      - -2.258606270821623
+      - {name: G148, pickup_dispenser: G148, spawn_robot_name: AGV5, spawn_robot_type: TinyRobot}
+    - - 2.258606270821623
+      - -3.764343784702705
+      - {name: G147, pickup_dispenser: G147}
+    - - 2.258606270821623
+      - -5.2485707626712
+      - {name: G146, pickup_dispenser: G146}
+    - - 2.258606270821623
+      - -6.754308276552282
+      - {name: G145, pickup_dispenser: G145}
+    - - 2.258606270821623
+      - -8.238535254520777
+      - {name: G144, pickup_dispenser: G144}
