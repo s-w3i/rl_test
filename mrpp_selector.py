@@ -324,6 +324,9 @@ def astar(
     allow_occupied: Optional[Set[Coord]] = None,
     cost_map: Optional[Union['np.ndarray', List[List[float]]]] = None,
     turn_penalty: Optional[Union['np.ndarray', List[List[float]]]] = None,
+    *,
+    edge_penalty: Optional[Dict[Tuple[Coord, Coord], float]] = None,
+    epsilon: float = 1.0,
 ) -> Optional[Path]:
     """A* on 4-connected grid with optional blocked nodes/edges and costs.
        blocked_edges treats edges as directed pairs (u,v).
@@ -409,11 +412,16 @@ def astar(
     def _dir(a: Coord, b: Coord) -> Tuple[int, int]:
         return (b[0] - a[0], b[1] - a[1])
 
+    edge_penalty = edge_penalty or {}
+    eps = float(epsilon) if epsilon is not None else 1.0
+    if eps < 1.0:
+        eps = 1.0
+
     openq: List[Tuple[float, int, Coord]] = []
     g: Dict[Coord, float] = {start: 0.0}
     came: Dict[Coord, Coord] = {}
     cnt = 0
-    heapq.heappush(openq, (float(manhattan(start, goal)), cnt, start))
+    heapq.heappush(openq, (eps * float(manhattan(start, goal)), cnt, start))
     closed = set()
 
     while openq:
@@ -441,13 +449,14 @@ def astar(
                 turned = _dir(prev, u) != _dir(u, v)
             base_avg = 0.5 * (_cell_val(cost_map, u) + _cell_val(cost_map, v))
             turn_cost = _cell_val(turn_penalty, u) if turned else 0.0
-            step = 1.0 + base_avg + turn_cost
+            penalty_cost = float(edge_penalty.get((u, v), 0.0))
+            step = 1.0 + base_avg + turn_cost + penalty_cost
             tentative = g[u] + step
             if tentative < g.get(v, 10**9):
                 g[v] = tentative
                 came[v] = u
                 cnt += 1
-                f = tentative + float(manhattan(v, goal))
+                f = tentative + eps * float(manhattan(v, goal))
                 heapq.heappush(openq, (f, cnt, v))
     return None
 
@@ -548,6 +557,8 @@ class ScoreWeights:
     w_overlap_edge: float = 1.0
     # time-synchronized node conflicts (same cell, same timestamp)
     w_path_overlap: float = 0.0
+    # safety gap for tailgating
+    w_follow: float = 5.0
     # ROS2-style conflict penalties
     w_h2h: float = 20.0         # head-to-head swaps/head-on passes
     w_deadlock: float = 50.0    # directed wait-for cycles (>=3 robots)
@@ -601,134 +612,68 @@ def _align_paths(candidate: Path, others: List[Path]) -> Tuple[List[Coord], List
 
 # ----- ROS2-like conflict metrics over full horizon -----
 
-def _count_path_overlap_full(cand: List[Coord], others: List[List[Coord]]) -> int:
-    cnt = 0
-    for o in others:
-        for t in range(len(cand)):
-            if cand[t] == o[t]:
-                cnt += 1
-    return cnt
+@dataclass
+class ConflictStats:
+    vertex_cells: List[Coord]
+    edge_cells: List[Coord]
+    follow_cells: List[Coord]
+    deadlock_cells: List[Coord]
+
+    @property
+    def path_overlap(self) -> int:
+        return len(self.vertex_cells)
+
+    @property
+    def h2h(self) -> int:
+        return len(self.edge_cells)
+
+    @property
+    def follow(self) -> int:
+        return len(self.follow_cells)
+
+    @property
+    def deadlock(self) -> int:
+        return len(self.deadlock_cells)
 
 
-def _count_head_to_head_full(cand: List[Coord], others: List[List[Coord]]) -> int:
-    cnt = 0
+def _analyze_conflicts_aligned(cand: List[Coord], others: List[List[Coord]]) -> ConflictStats:
     T = len(cand)
-    for o in others:
-        for t in range(T-1):
-            c_curr, c_next = cand[t], cand[t+1]
-            o_curr, o_next = o[t],    o[t+1]
-            # ① classic swap
-            if c_curr == o_next and o_curr == c_next:
-                cnt += 1
-                continue
-            # ② head-on convergence turning into a pass (both continue into each other's start)
-            if c_next == o_next and c_curr != o_curr and t+2 < T:
-                cont1 = cand[t+2] == o_curr
-                cont2 = o[t+2]    == c_curr
-                if cont1 and cont2:
-                    cnt += 1
-    return cnt
+    vertex_cells: List[Coord] = []
+    edge_cells: List[Coord] = []
+    follow_cells: List[Coord] = []
+    deadlock_cells: List[Coord] = []
 
-
-def _count_self_trivial_cycles(path: Path) -> int:
-    seen: Dict[Coord, int] = {}
-    repeats = 0
-    for i, node in enumerate(path):
-        if node in seen:
-            repeats += 1
-        else:
-            seen[node] = i
-    return repeats
-
-
-def _count_deadlock_cycles_involving_candidate(cand: List[Coord], others: List[List[Coord]]) -> int:
-    # Build wait-for graph at every t: r→s if r's next node equals s's current node
-    # Count cycles (>=3 robots) that include the candidate robot.
-    robots_idx = list(range(len(others) + 1))  # 0=candidate, then others 1..N
-    all_paths = [cand] + others
-    T = len(cand)
-
-    def has_cycle_including_zero(adj: Dict[int, Set[int]]) -> bool:
-        visited, stack = set(), []
-        onstack: Set[int] = set()
-
-        def dfs(v: int) -> bool:
-            visited.add(v)
-            stack.append(v)
-            onstack.add(v)
-            for nbr in adj.get(v, set()):
-                if nbr not in visited:
-                    if dfs(nbr):
-                        return True
-                elif nbr in onstack:
-                    idx = stack.index(nbr)
-                    cyc = set(stack[idx:])
-                    # ignore 2-cycles (treated as head-to-head)
-                    if len(cyc) >= 3 and 0 in cyc:
-                        return True
-            stack.pop()
-            onstack.remove(v)
-            return False
-
-        for v in adj.keys():
-            if v not in visited and dfs(v):
-                return True
-        return False
-
-    deadlocks = 0
-    for t in range(T-1):
-        adj: Dict[int, Set[int]] = {i: set() for i in robots_idx}
-        for i in robots_idx:
-            curr_i = all_paths[i][t]
-            next_i = all_paths[i][t+1]
-            if next_i == curr_i:
-                continue
-            for j in robots_idx:
-                if i == j:
-                    continue
-                curr_j = all_paths[j][t]
-                if next_i == curr_j:
-                    adj[i].add(j)
-        if has_cycle_including_zero(adj):
-            deadlocks += 1
-    return deadlocks
-
-
-def _conflict_cells_for_candidate(cand: List[Coord], others: List[List[Coord]]) -> Tuple[Set[Coord], Set[Coord], Set[Coord]]:
-    """Return sets of cells along the candidate path involved in conflicts.
-    - path_overlap: same cell at same timestamp with any other robot → mark cand[t]
-    - h2h: head-to-head swap/pass situations → mark cand[t+1]
-    - deadlock: wait-for cycle (>=3) including candidate at time t → mark cand[t+1]
-    """
-    T = len(cand)
-    path_ov: Set[Coord] = set()
-    h2h_cells: Set[Coord] = set()
-    dead_cells: Set[Coord] = set()
-    # path overlap
+    # Node occupancy conflicts at the same timestep (vertex conflicts)
     for o in others:
         for t in range(T):
             if cand[t] == o[t]:
-                path_ov.add(cand[t])
-    # h2h (swap or pass)
+                vertex_cells.append(cand[t])
+
+    # Edge swaps (head-to-head) and follow conflicts
     for o in others:
         for t in range(T-1):
             c_curr, c_next = cand[t], cand[t+1]
             o_curr, o_next = o[t],    o[t+1]
-            swap = (c_curr == o_next and o_curr == c_next)
-            pass_through = False
-            if c_next == o_next and c_curr != o_curr and t+2 < T:
-                pass_through = (cand[t+2] == o_curr and o[t+2] == c_curr)
-            if swap or pass_through:
-                h2h_cells.add(c_next)
-    # deadlock detection per t
-    robots_idx = list(range(len(others) + 1))  # 0=cand
+            if c_curr == o_next and o_curr == c_next:
+                edge_cells.append(c_next)
+                continue
+            # Candidate steps into a cell just vacated by another robot (no safety gap)
+            if c_next == o_curr and o_next != o_curr:
+                follow_cells.append(c_next)
+
+    # Wait-for deadlocks (>=3 agents) including the candidate
+    robots_idx = list(range(len(others) + 1))  # 0=candidate, others 1..N
     all_paths = [cand] + others
+
     def has_cycle_including_zero(adj: Dict[int, Set[int]]) -> bool:
         visited: Set[int] = set()
         onstack: Set[int] = set()
         stack: List[int] = []
+
         def dfs(v: int) -> bool:
-            visited.add(v); onstack.add(v); stack.append(v)
+            visited.add(v)
+            onstack.add(v)
+            stack.append(v)
             for nbr in adj.get(v, set()):
                 if nbr not in visited:
                     if dfs(nbr):
@@ -741,12 +686,15 @@ def _conflict_cells_for_candidate(cand: List[Coord], others: List[List[Coord]]) 
                         cyc = {nbr}
                     if len(cyc) >= 3 and 0 in cyc:
                         return True
-            stack.pop(); onstack.remove(v)
+            stack.pop()
+            onstack.remove(v)
             return False
+
         for v in list(adj.keys()):
             if v not in visited and dfs(v):
                 return True
         return False
+
     for t in range(T-1):
         adj: Dict[int, Set[int]] = {i: set() for i in robots_idx}
         for i in robots_idx:
@@ -761,8 +709,52 @@ def _conflict_cells_for_candidate(cand: List[Coord], others: List[List[Coord]]) 
                 if next_i == curr_j:
                     adj[i].add(j)
         if has_cycle_including_zero(adj):
-            dead_cells.add(cand[t+1])
-    return path_ov, h2h_cells, dead_cells
+            deadlock_cells.append(cand[t+1])
+
+    return ConflictStats(
+        vertex_cells=vertex_cells,
+        edge_cells=edge_cells,
+        follow_cells=follow_cells,
+        deadlock_cells=deadlock_cells,
+    )
+
+
+def compute_conflict_stats(candidate: Path, others: List[Path]) -> ConflictStats:
+    cand_aligned, others_aligned = _align_paths(candidate, others)
+    return _analyze_conflicts_aligned(cand_aligned, others_aligned)
+
+
+def _count_path_overlap_full(cand: List[Coord], others: List[List[Coord]]) -> int:
+    return _analyze_conflicts_aligned(cand, others).path_overlap
+
+
+def _count_head_to_head_full(cand: List[Coord], others: List[List[Coord]]) -> int:
+    return _analyze_conflicts_aligned(cand, others).h2h
+
+
+def _count_deadlock_cycles_involving_candidate(cand: List[Coord], others: List[List[Coord]]) -> int:
+    return _analyze_conflicts_aligned(cand, others).deadlock
+
+
+def _count_self_trivial_cycles(path: Path) -> int:
+    seen: Dict[Coord, int] = {}
+    repeats = 0
+    for i, node in enumerate(path):
+        if node in seen:
+            repeats += 1
+        else:
+            seen[node] = i
+    return repeats
+
+def _conflict_cells_for_candidate(cand: List[Coord], others: List[List[Coord]]) -> Tuple[Set[Coord], Set[Coord], Set[Coord], Set[Coord]]:
+    """Return sets of cells along the candidate path involved in conflicts."""
+    stats = _analyze_conflicts_aligned(cand, others)
+    return (
+        set(stats.vertex_cells),
+        set(stats.edge_cells),
+        set(stats.follow_cells),
+        set(stats.deadlock_cells),
+    )
 
 
 # ----- Cost computation (components for display) -----
@@ -772,20 +764,23 @@ def cost_components(candidate: Path, others: List[Path], w: ScoreWeights) -> Tup
     Tturns = count_turns(candidate)
     cand_aligned, others_aligned = _align_paths(candidate, others)
     # time-synchronized node conflicts
-    path_overlap = _count_path_overlap_full(cand_aligned, others_aligned)
+    conflicts = _analyze_conflicts_aligned(cand_aligned, others_aligned)
+    path_overlap = conflicts.path_overlap
+    follow = conflicts.follow
     # static cell reuse across any time (unique cells)
     cells_cand = set(candidate)
     cells_others = set().union(*map(set, others)) if others else set()
     cell_overlap = len(cells_cand & cells_others)
     edge_overlap = len(undirected_edges(candidate) & set().union(*map(undirected_edges, others))) if others else 0
-    h2h = _count_head_to_head_full(cand_aligned, others_aligned)
-    dead = _count_deadlock_cycles_involving_candidate(cand_aligned, others_aligned)
+    h2h = conflicts.h2h
+    dead = conflicts.deadlock
     self_cyc = _count_self_trivial_cycles(candidate)
     components = {
         'length': L,
         'turns': Tturns,
         'cell_overlap': cell_overlap,
         'path_overlap': path_overlap,
+        'follow': follow,
         'edge_overlap': edge_overlap,
         'h2h': h2h,
         'deadlock': dead,
@@ -794,6 +789,7 @@ def cost_components(candidate: Path, others: List[Path], w: ScoreWeights) -> Tup
     cost = (
         w.w_len * L + w.w_turn * Tturns +
         w.w_overlap_cell * cell_overlap + w.w_overlap_edge * edge_overlap + w.w_path_overlap * path_overlap +
+        w.w_follow * follow +
         w.w_h2h * h2h + w.w_deadlock * dead + w.w_self_cycle * self_cyc
     )
     return components, cost
@@ -820,7 +816,7 @@ class L2RRanker:
         self.ok = False
         self.model = None
         self.features = [
-            "length","turns","cell_overlap","path_overlap","edge_overlap",
+            "length","turns","cell_overlap","path_overlap","follow","edge_overlap",
             "h2h","deadlock","self_cycle","n_others","K"
         ]
         self.model_type = None  # 'ranker' or None
@@ -863,6 +859,7 @@ class L2RRanker:
                 "turns": comp['turns'],
                 "cell_overlap": comp['cell_overlap'],
                 "path_overlap": comp['path_overlap'],
+                "follow": comp['follow'],
                 "edge_overlap": comp['edge_overlap'],
                 "h2h": comp['h2h'],
                 "deadlock": comp['deadlock'],
@@ -871,7 +868,7 @@ class L2RRanker:
                 "K": len(candidates),
             }
             # Neutralize disabled features so they can't sway ordering within this case
-            for k in ("length","turns","cell_overlap","path_overlap","edge_overlap","h2h","deadlock","self_cycle"):
+            for k in ("length","turns","cell_overlap","path_overlap","follow","edge_overlap","h2h","deadlock","self_cycle"):
                 if k in disabled:
                     row[k] = 0.0
             rows.append([row.get(k, 0.0) for k in self.features])
@@ -1149,6 +1146,21 @@ class GridView(QtWidgets.QGraphicsView):
         item = self.scene.addEllipse(rect, pen, brush)
         self._add_overlay_item(item)
 
+    def draw_conflict_square(self, rc: Coord, color: QtGui.QColor):
+        # Filled square marker centered in the cell
+        r, c = rc
+        s = self.cell_size
+        half = s * 0.22
+        cx = c*s + s/2.0
+        cy = r*s + s/2.0
+        rect = QtCore.QRectF(cx - half, cy - half, 2*half, 2*half)
+        pen = QtGui.QPen(QtGui.QColor(255, 255, 255))
+        pen.setWidthF(1.0)
+        pen.setCosmetic(True)
+        brush = QtGui.QBrush(color)
+        item = self.scene.addRect(rect, pen, brush)
+        self._add_overlay_item(item)
+
     def draw_conflict_cross(self, rc: Coord, color: QtGui.QColor):
         # A small X centered in the cell
         r, c = rc
@@ -1244,6 +1256,7 @@ class MainWindow(QtWidgets.QWidget):
         self.wturn = QtWidgets.QDoubleSpinBox(); self.wturn.setRange(0.0, 10.0); self.wturn.setSingleStep(0.05); self.wturn.setValue(0.25)
         self.wcell = QtWidgets.QDoubleSpinBox(); self.wcell.setRange(0.0, 50.0); self.wcell.setSingleStep(0.5); self.wcell.setValue(2.0)
         self.wpath = QtWidgets.QDoubleSpinBox(); self.wpath.setRange(0.0, 50.0); self.wpath.setSingleStep(0.5); self.wpath.setValue(0.0)
+        self.wfollow = QtWidgets.QDoubleSpinBox(); self.wfollow.setRange(0.0, 200.0); self.wfollow.setSingleStep(1.0); self.wfollow.setValue(5.0)
         self.wedge = QtWidgets.QDoubleSpinBox(); self.wedge.setRange(0.0, 50.0); self.wedge.setSingleStep(0.5); self.wedge.setValue(1.0)
         self.wh2h = QtWidgets.QDoubleSpinBox(); self.wh2h.setRange(0.0, 200.0); self.wh2h.setSingleStep(1.0); self.wh2h.setValue(20.0)
         self.wdead = QtWidgets.QDoubleSpinBox(); self.wdead.setRange(0.0, 500.0); self.wdead.setSingleStep(5.0); self.wdead.setValue(50.0)
@@ -1255,6 +1268,7 @@ class MainWindow(QtWidgets.QWidget):
         weights_form.addRow("w_turn:", self.wturn)
         weights_form.addRow("w_overlap_cell:", self.wcell)
         weights_form.addRow("w_path_overlap:", self.wpath)
+        weights_form.addRow("w_follow:", self.wfollow)
         weights_form.addRow("w_overlap_edge:", self.wedge)
         weights_form.addRow("w_h2h:", self.wh2h)
         weights_form.addRow("w_deadlock:", self.wdead)
@@ -1269,9 +1283,9 @@ class MainWindow(QtWidgets.QWidget):
         self.weight_mode_box.addItems(["Fixed", "Learned", "Blend 50/50"])  # default Fixed
 
         # Candidate cost table
-        self.cost_table = QtWidgets.QTableWidget(0, 12)
+        self.cost_table = QtWidgets.QTableWidget(0, 13)
         self.cost_table.setHorizontalHeaderLabels([
-            "#", "len", "turns", "cellOv", "pathOv", "edgeOv", "h2h", "deadlock", "selfCyc", "∑cost", "L2R_pred", "selected"
+            "#", "len", "turns", "cellOv", "pathOv", "follow", "edgeOv", "h2h", "deadlock", "selfCyc", "∑cost", "L2R_pred", "selected"
         ])
         self.cost_table.horizontalHeader().setStretchLastSection(True)
         self.cost_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
@@ -1336,11 +1350,12 @@ class MainWindow(QtWidgets.QWidget):
         self.comp_turn = QtWidgets.QCheckBox("turns"); self.comp_turn.setChecked(True)
         self.comp_cell = QtWidgets.QCheckBox("cellOv"); self.comp_cell.setChecked(True)
         self.comp_path = QtWidgets.QCheckBox("pathOv"); self.comp_path.setChecked(True)
+        self.comp_follow = QtWidgets.QCheckBox("follow"); self.comp_follow.setChecked(True)
         self.comp_edge = QtWidgets.QCheckBox("edgeOv"); self.comp_edge.setChecked(True)
         self.comp_h2h = QtWidgets.QCheckBox("h2h"); self.comp_h2h.setChecked(True)
         self.comp_dead = QtWidgets.QCheckBox("deadlock"); self.comp_dead.setChecked(True)
         self.comp_self = QtWidgets.QCheckBox("selfCyc"); self.comp_self.setChecked(True)
-        for w in [self.comp_len, self.comp_turn, self.comp_cell, self.comp_path, self.comp_edge, self.comp_h2h, self.comp_dead, self.comp_self]:
+        for w in [self.comp_len, self.comp_turn, self.comp_cell, self.comp_path, self.comp_follow, self.comp_edge, self.comp_h2h, self.comp_dead, self.comp_self]:
             comps_row.addWidget(w)
         comps_row.addStretch(1)
         right.addLayout(comps_row)
@@ -1421,6 +1436,7 @@ class MainWindow(QtWidgets.QWidget):
         self.comp_turn.toggled.connect(self.on_components_changed)
         self.comp_cell.toggled.connect(self.on_components_changed)
         self.comp_path.toggled.connect(self.on_components_changed)
+        self.comp_follow.toggled.connect(self.on_components_changed)
         self.comp_edge.toggled.connect(self.on_components_changed)
         self.comp_h2h.toggled.connect(self.on_components_changed)
         self.comp_dead.toggled.connect(self.on_components_changed)
@@ -1440,7 +1456,7 @@ class MainWindow(QtWidgets.QWidget):
         w = ScoreWeights(
             w_len=self.wlen.value(), w_turn=self.wturn.value(),
             w_overlap_cell=self.wcell.value(), w_overlap_edge=self.wedge.value(),
-            w_path_overlap=self.wpath.value(),
+            w_path_overlap=self.wpath.value(), w_follow=self.wfollow.value(),
             w_h2h=self.wh2h.value(), w_deadlock=self.wdead.value(), w_self_cycle=self.wself.value(),
         )
         return self._mask_weights(w)
@@ -1455,6 +1471,8 @@ class MainWindow(QtWidgets.QWidget):
             disabled.add("cell_overlap")
         if not self.comp_path.isChecked():
             disabled.add("path_overlap")
+        if not self.comp_follow.isChecked():
+            disabled.add("follow")
         if not self.comp_edge.isChecked():
             disabled.add("edge_overlap")
         if not self.comp_h2h.isChecked():
@@ -1472,6 +1490,7 @@ class MainWindow(QtWidgets.QWidget):
             w_turn=(0.0 if "turns" in d else w.w_turn),
             w_overlap_cell=(0.0 if "cell_overlap" in d else w.w_overlap_cell),
             w_path_overlap=(0.0 if "path_overlap" in d else w.w_path_overlap),
+            w_follow=(0.0 if "follow" in d else w.w_follow),
             w_overlap_edge=(0.0 if "edge_overlap" in d else w.w_overlap_edge),
             w_h2h=(0.0 if "h2h" in d else w.w_h2h),
             w_deadlock=(0.0 if "deadlock" in d else w.w_deadlock),
@@ -1498,6 +1517,7 @@ class MainWindow(QtWidgets.QWidget):
         self.wturn.setEnabled(self.comp_turn.isChecked())
         self.wcell.setEnabled(self.comp_cell.isChecked())
         self.wpath.setEnabled(self.comp_path.isChecked())
+        self.wfollow.setEnabled(self.comp_follow.isChecked())
         self.wedge.setEnabled(self.comp_edge.isChecked())
         self.wh2h.setEnabled(self.comp_h2h.isChecked())
         self.wdead.setEnabled(self.comp_dead.isChecked())
@@ -1692,6 +1712,7 @@ class MainWindow(QtWidgets.QWidget):
                 QtWidgets.QTableWidgetItem(str(int(comp['turns']))),
                 QtWidgets.QTableWidgetItem(str(int(comp['cell_overlap']))),
                 QtWidgets.QTableWidgetItem(str(int(comp['path_overlap']))),
+                QtWidgets.QTableWidgetItem(str(int(comp['follow']))),
                 QtWidgets.QTableWidgetItem(str(int(comp['edge_overlap']))),
                 QtWidgets.QTableWidgetItem(str(int(comp['h2h']))),
                 QtWidgets.QTableWidgetItem(str(int(comp['deadlock']))),
@@ -1714,6 +1735,7 @@ class MainWindow(QtWidgets.QWidget):
                 f"w_turn({w.w_turn})*turns({int(comp['turns'])}) + "
                 f"w_cell({w.w_overlap_cell})*cellOv({int(comp['cell_overlap'])}) + "
                 f"w_path({w.w_path_overlap})*pathOv({int(comp['path_overlap'])}) + "
+                f"w_follow({w.w_follow})*follow({int(comp['follow'])}) + "
                 f"w_edge({w.w_overlap_edge})*edgeOv({int(comp['edge_overlap'])}) + "
                 f"w_h2h({w.w_h2h})*h2h({int(comp['h2h'])}) + "
                 f"w_dead({w.w_deadlock})*dead({int(comp['deadlock'])}) + "
@@ -1774,6 +1796,7 @@ class MainWindow(QtWidgets.QWidget):
                 f"w_turn*turns={w.w_turn}*{int(comp['turns'])}={w.w_turn*comp['turns']:.2f}",
                 f"w_cell*cellOv={w.w_overlap_cell}*{int(comp['cell_overlap'])}={w.w_overlap_cell*comp['cell_overlap']:.2f}",
                 f"w_path*pathOv={w.w_path_overlap}*{int(comp['path_overlap'])}={w.w_path_overlap*comp['path_overlap']:.2f}",
+                f"w_follow*follow={w.w_follow}*{int(comp['follow'])}={w.w_follow*comp['follow']:.2f}",
                 f"w_edge*edgeOv={w.w_overlap_edge}*{int(comp['edge_overlap'])}={w.w_overlap_edge*comp['edge_overlap']:.2f}",
                 f"w_h2h*h2h={w.w_h2h}*{int(comp['h2h'])}={w.w_h2h*comp['h2h']:.2f}",
                 f"w_dead*dead={w.w_deadlock}*{int(comp['deadlock'])}={w.w_deadlock*comp['deadlock']:.2f}",
@@ -1842,15 +1865,18 @@ class MainWindow(QtWidgets.QWidget):
                 if committed:
                     # align paths for conflict extraction
                     cand_aligned, others_aligned = _align_paths(cand_path, committed)
-                    path_ov, h2h_cells, dead_cells = _conflict_cells_for_candidate(cand_aligned, others_aligned)
+                    path_ov, edge_cells, follow_cells, dead_cells = _conflict_cells_for_candidate(cand_aligned, others_aligned)
                     # Colors per conflict type
                     col_path = QtGui.QColor(255, 215, 0)   # gold circle for path overlap
+                    col_follow = QtGui.QColor(72, 209, 204)  # turquoise square for follow
                     col_h2h  = QtGui.QColor(255, 140, 0)   # dark orange X for head-to-head
                     col_dead = QtGui.QColor(186, 85, 211)  # orchid diamond for deadlock
                     for rc in path_ov:
                         self.grid_view.draw_conflict_circle(rc, col_path)
-                    for rc in h2h_cells:
+                    for rc in edge_cells:
                         self.grid_view.draw_conflict_cross(rc, col_h2h)
+                    for rc in follow_cells:
+                        self.grid_view.draw_conflict_square(rc, col_follow)
                     for rc in dead_cells:
                         self.grid_view.draw_conflict_diamond(rc, col_dead)
 
@@ -1948,6 +1974,8 @@ class MainWindow(QtWidgets.QWidget):
                         w_len = 0.5*(used_weights.w_len + learned_w.w_len),
                         w_turn = 0.5*(used_weights.w_turn + learned_w.w_turn),
                         w_overlap_cell = 0.5*(used_weights.w_overlap_cell + learned_w.w_overlap_cell),
+                        w_path_overlap = 0.5*(used_weights.w_path_overlap + learned_w.w_path_overlap),
+                        w_follow = 0.5*(used_weights.w_follow + learned_w.w_follow),
                         w_overlap_edge = 0.5*(used_weights.w_overlap_edge + learned_w.w_overlap_edge),
                         w_h2h = 0.5*(used_weights.w_h2h + learned_w.w_h2h),
                         w_deadlock = 0.5*(used_weights.w_deadlock + learned_w.w_deadlock),
