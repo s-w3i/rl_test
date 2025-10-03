@@ -10,8 +10,8 @@ if TYPE_CHECKING:  # only for type hints; avoid runtime import cycles
 def build_analytic_costmap(grid: 'MapGrid', committed_paths: List['Path']) -> np.ndarray:
     """Construct a lightweight analytic cost-map.
     - Base zeros
-    - +0.8 in cells with free-degree ≤ 2 (narrow corridors)
-    - +1.2 near committed paths (Chebyshev distance ≤ 1 from any committed cell)
+    - +0.4 in cells with free-degree ≤ 2 (narrow corridors)
+    - +2.0 near committed paths (Chebyshev distance ≤ R=3 from any committed cell)
     - Clipped to [0, 3]
     Returns a numpy array with shape (rows, cols).
     """
@@ -19,6 +19,7 @@ def build_analytic_costmap(grid: 'MapGrid', committed_paths: List['Path']) -> np
     cm = np.zeros((rows, cols), dtype=float)
 
     # Narrow corridors: free-degree ≤ 2
+    NARROW_PEN = 0.4   # ↓ from 0.8 to avoid over-penalizing tight but clean corridors
     for r in range(rows):
         for c in range(cols):
             if grid.grid[r][c] != 0:
@@ -28,16 +29,18 @@ def build_analytic_costmap(grid: 'MapGrid', committed_paths: List['Path']) -> np
                 if 0 <= rr < rows and 0 <= cc < cols and grid.grid[rr][cc] == 0:
                     deg += 1
             if deg <= 2:
-                cm[r, c] += 0.8
+                cm[r, c] += NARROW_PEN
 
-    # Proximity to committed paths: Chebyshev distance ≤ 1 (includes 8-neighborhood)
+    # Proximity to committed paths: Chebyshev distance ≤ R (thicker corridor penalty)
+    R = 3              # try 2–3
+    NEAR_PATH_PEN = 2.0
     if committed_paths:
         for p in committed_paths:
             for (r, c) in p:
-                for rr in range(r-1, r+2):
-                    for cc in range(c-1, c+2):
+                for rr in range(r-R, r+R+1):
+                    for cc in range(c-R, c+R+1):
                         if 0 <= rr < rows and 0 <= cc < cols:
-                            cm[rr, cc] += 1.2
+                            cm[rr, cc] += NEAR_PATH_PEN
 
     # Clip to [0, 3]
     np.clip(cm, 0.0, 3.0, out=cm)
