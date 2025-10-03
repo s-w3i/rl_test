@@ -12,6 +12,8 @@ from mrpp_selector import (
     GridView,
     MapGrid,
     ScoreWeights,
+    _align_paths,
+    _conflict_cells_for_candidate,
     astar,
     cost_components,
     demo_map,
@@ -59,15 +61,16 @@ class HeuristicSelectorWindow(QtWidgets.QWidget):
         self.candidates: List[PathT] = []
         self.components: List[Dict[str, float]] = []
         self.costs: List[float] = []
+        self.candidate_conflicts: List[Dict[str, Set[Coord]]] = []
         self.selected_candidate_idx: Optional[int] = None
         self.cost_map = None
         self.last_goal: Optional[Coord] = None
 
         # Diversity configuration (successive penalty selector)
-        self.min_jaccard_sep: float = 0.35
+        self.min_jaccard_sep: float = 0.55
         self.weighted_astar_epsilon: float = 1.3
-        self.penalty_lambda: float = 1.0
-        self.selector_detour_cap: float = 0.30
+        self.penalty_lambda: float = 2.0
+        self.selector_detour_cap: float = 1.3
 
         self._build_ui()
         self._reset_planning()
@@ -304,6 +307,7 @@ class HeuristicSelectorWindow(QtWidgets.QWidget):
         self.candidates = []
         self.components = []
         self.costs = []
+        self.candidate_conflicts = []
         self.selected_candidate_idx = None
     def _refresh_status(self, text: Optional[str] = None) -> None:
         if text is not None:
@@ -341,13 +345,30 @@ class HeuristicSelectorWindow(QtWidgets.QWidget):
             if goal and not self.paths[self.current_robot]:
                 self.grid_view.draw_end_marker(goal[0], goal[1], color.lighter(130))
         if self.candidates:
-            highlight_color = self.COLORS[self.current_robot % len(self.COLORS)] if self.current_robot < self.num_robots else QtGui.QColor(200, 200, 200)
+            if self.current_robot < self.num_robots:
+                highlight_color = self.COLORS[self.current_robot % len(self.COLORS)]
+            else:
+                highlight_color = QtGui.QColor(200, 200, 200)
             for idx, path in enumerate(self.candidates):
                 if idx == self.selected_candidate_idx:
                     self.grid_view.draw_candidate(path)
                     self.grid_view.draw_highlight(path, highlight_color)
                 else:
                     self.grid_view.draw_candidate(path)
+            if (
+                self.selected_candidate_idx is not None
+                and 0 <= self.selected_candidate_idx < len(self.candidates)
+                and 0 <= self.selected_candidate_idx < len(self.candidate_conflicts)
+            ):
+                conflict_sets = self.candidate_conflicts[self.selected_candidate_idx]
+                path_cells = conflict_sets.get("path_overlap", set())
+                edge_cells = conflict_sets.get("h2h", set())
+                path_color = QtGui.QColor(255, 215, 0)
+                h2h_color = QtGui.QColor(255, 140, 0)
+                for rc in path_cells:
+                    self.grid_view.draw_conflict_circle(rc, path_color)
+                for rc in edge_cells:
+                    self.grid_view.draw_conflict_cross(rc, h2h_color)
         if self.cost_map is not None and self.chk_show_overlay.isChecked():
             self.grid_view.draw_costmap_overlay(self.cost_map)
 
@@ -471,11 +492,48 @@ class HeuristicSelectorWindow(QtWidgets.QWidget):
         self.candidates = []
         self.components = []
         self.costs = []
+        self.candidate_conflicts = []
         for cand in candidates:
-            comps, cost = cost_components(cand, committed, weights)
+            comps, _ = cost_components(cand, committed, weights)
+            path_cells: Set[Coord] = set()
+            edge_cells: Set[Coord] = set()
+            follow_cells: Set[Coord] = set()
+            deadlock_cells: Set[Coord] = set()
+            if committed:
+                cand_aligned, others_aligned = _align_paths(cand, committed)
+                (path_cells,
+                 edge_cells,
+                 follow_cells,
+                 deadlock_cells) = _conflict_cells_for_candidate(
+                    cand_aligned,
+                    others_aligned,
+                )
+            comps["path_overlap"] = len(path_cells)
+            comps["h2h"] = len(edge_cells)
+            comps["follow"] = len(follow_cells)
+            comps["deadlock"] = len(deadlock_cells)
+            cost = (
+                weights.w_len * comps.get("length", 0.0)
+                + weights.w_turn * comps.get("turns", 0.0)
+                + weights.w_overlap_cell * comps.get("cell_overlap", 0.0)
+                + weights.w_overlap_edge * comps.get("edge_overlap", 0.0)
+                + weights.w_path_overlap * comps.get("path_overlap", 0.0)
+                + weights.w_follow * comps.get("follow", 0.0)
+                + weights.w_h2h * comps.get("h2h", 0.0)
+                + weights.w_deadlock * comps.get("deadlock", 0.0)
+                + weights.w_self_cycle * comps.get("self_cycle", 0.0)
+            )
             self.candidates.append(cand)
             self.components.append(comps)
             self.costs.append(cost)
+            self.candidate_conflicts.append(
+                {
+                    "path_overlap": path_cells,
+                    "h2h": edge_cells,
+                    "follow": follow_cells,
+                    "deadlock": deadlock_cells,
+                }
+            )
         if not self.candidates:
             self._clear_table()
             self._clear_candidates()
@@ -497,7 +555,7 @@ class HeuristicSelectorWindow(QtWidgets.QWidget):
             f"epsilon={diag.get('epsilon', self.weighted_astar_epsilon):.2f}, "
             f"lambda={diag.get('lam', self.penalty_lambda):.2f}, "
             f"min_sep={diag.get('min_jaccard_sep', self.min_jaccard_sep):.2f}, "
-            f"detour≤{diag.get('max_detour_ratio', self.selector_detour_cap):.2f}"
+            f"detour≤{diag.get('max_detour_ratio', self.selector_detour_cap):.2f}×"
         )
         self._refresh_status(f"Review candidates and commit when ready. ({diag_msg})")
 
@@ -672,7 +730,7 @@ class HeuristicSelectorWindow(QtWidgets.QWidget):
             return [], {"strategy": "penalty", "selected_count": 0, "error": "no_base_path"}
 
         base_len = _path_cost(base_path)
-        detour_limit = float("inf") if base_len <= 1e-9 else (1.0 + detour_cap) * base_len
+        detour_limit = float("inf") if base_len <= 1e-9 else detour_cap * base_len
 
         penalty: Dict[Tuple[Coord, Coord], float] = {}
         accepted: List[PathT] = []
